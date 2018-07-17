@@ -129,14 +129,14 @@ Mailman author_is_list is handled."
 
 
 (defun sjt/vm-intl-student-save-all-attachments (attachment-directory
-						 &optional live)
+						 &optional dryrun)
   
   (interactive (nconc (sjt/read-attachment-directory)
 		      (list current-prefix-arg)))
   
   (let* ((gitdir (expand-file-name ".git" attachment-directory))
-	 (DRYRUN (and (not live) " [DRY RUN]"))
-	 (msg1 (format "Attachment directory: %s" attachment-directory))
+	 (DRYRUN (if dryrun " [DRY RUN]" ""))
+	 (msg1 (format "Arguments: %s %s %s" attachment-directory dryrun DRYRUN))
 	 (msg2 (format "\n%s exists: %s"
 		       attachment-directory
 		       (if (file-exists-p attachment-directory) "yes" "no")))
@@ -160,33 +160,29 @@ Mailman author_is_list is handled."
 	 (msg6 (format "\nSaving all attachments.%s" DRYRUN))
 	 (msg7 (format "\n  Adding all files.%s\n  Committing.%s"
 		       DRYRUN DRYRUN)))
-    (if DRYRUN
+    (if (> (length DRYRUN) 0)
 	(with-displaying-help-buffer
 	  (lambda ()
 	    (princ (concat msg1 msg2 msg3 msg4 msg5 msg6 msg7 "\n"))))
       (message msg1)			; Display attachment directory name.
-      (sit-for 1)
       (message msg2)			; Check existence.
-      (sit-for 1)
       (message msg3)			; ... and for GITDIR.
-      (sit-for 1)
       (unless (file-exists-p attachment-directory)
 	(message msg4)
-	(sit-for 1)
 	(make-directory attachment-directory))
       ;; #### Should check for directoryness and write access.
       (message msg5)
-      (sit-for 1)
       (let ((default-directory attachment-directory))
 	(if (not (file-exists-p gitdir))
 	    (shell-command "git init")
-	  (shell-command
-	   "git commit -a -m 'Commit for save-all-attachments.'")))
+	  (shell-command "git add .")
+	  (shell-command "git commit -m 'Commit for save-all-attachments.'")))
       (message msg6)
-      (sit-for 1)
-      (vm-save-all-attachments nil attachment-directory)
+      (let ((vm-mime-delete-after-saving t))
+	(vm-save-all-attachments nil attachment-directory))
       (message msg7)
-      (sit-for 1)
-      (shell-command "git commit -a -m 'Commit for save-all-attachments.'")
+      (let ((default-directory attachment-directory))
+	(shell-command "git add .")
+	(shell-command "git commit -m 'Commit for save-all-attachments.'"))
       (message "Done!")
       )))
