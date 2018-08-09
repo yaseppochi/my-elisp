@@ -175,7 +175,7 @@ Mailman author_is_list is handled."
       (let ((default-directory attachment-directory))
 	(if (not (file-exists-p gitdir))
 	    (shell-command "git init")
-	  (shell-command "git add .")
+	  (shell-command "git add -f .")
 	  (shell-command "git commit -m 'Commit for save-all-attachments.'")))
       (message msg6)
       (let ((vm-mime-delete-after-saving t))
