@@ -125,6 +125,8 @@ API and semantics are VM-conforming."
 returning (NAME NUMBER CHARSET LANG VALUE).  Advance point to end of segment.
 NAME and LANG are strings.  NUMBER is an integer.  CHARSET is a symbol.
 
+Assumes line is already unfolded.
+
 FRAGMENT := NAME ['*' [NUMBER '*'] '=' [[CHARSET] <'> [LANGUAGE] <'>] VALUE
 where NAME, CHARSET, and LANGUAGE are tokens, NUMBER is a decimal natural
 number, and VALUE is a token or quoted string.
