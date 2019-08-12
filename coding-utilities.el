@@ -1,4 +1,5 @@
 (require 'rfc2047)
+(provide 'coding-utilities)
 
 (defvar ok-charsets '(ascii))
 
@@ -15,12 +16,27 @@
   (setq charsets (or charsets '(ascii japanese-jisx0208)))
   (while (member (char-charset (char-after)) charsets) (forward-char)))
 
+(defun sjt/decode-gbk-region (start end)
+  (interactive "r")
+  (let ((process-coding-system-alist '(("iconv" . (utf-8 . binary)))))
+    ;;(message "%d %d" (marker-position sm) (marker-position em))
+    ;;(sit-for 3)
+    (call-process-region start end "iconv" t t nil "-t" "utf-8" "-f" "gbk")))
+(defun sjt/decode-base64-gbk-region (start end)
+  (interactive "r")
+  (let ((sm (set-marker (make-marker) start))
+	(em (set-marker (make-marker) end)))
+    (base64-decode-region sm em)
+    ;;(message "%d %d" (marker-position sm) (marker-position em))
+    (sjt/decode-gbk-region sm em)))
+
 ;;;###autoload
 (defun sjt/decode-region (b e codec)
   "Decode the current region with the method tagged by CODEC.
 CODEC is a single character.  The following codecs are defined:
   b BASE64
   e EUC-JP
+  g GBK
   i ISO-2022-JP
   r RFC 2047
   s Shift JIS
@@ -29,7 +45,7 @@ CODEC is a single character.  The following codecs are defined:
   (cond
 	((eq codec ?b) (base64-decode-region b e))
 	((eq codec ?e) (decode-coding-region b e 'euc-jp))
-	((eq codec ?g) (decode-coding-region b e 'gb2312))
+	((eq codec ?g) (sjt/decode-gbk-region b e))
 	((eq codec ?i) (decode-coding-region b e 'iso-2022-jp))
 	((eq codec ?r) (rfc2047-decode-region b e))
 	((eq codec ?s) (decode-coding-region b e 'shift_jis))
