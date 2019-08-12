@@ -1,5 +1,3 @@
-;;; save-attachments --- save all attachments in a VM folder
-
 ;; Copyright (C) 2018 Stephen J. Turnbull
 
 ;; Author: Stephen J. Turnbull <stephen@xemacs.org>
@@ -29,6 +27,8 @@
 ;;
 ;; We need to improve parsing of RFC 2231-encoded fields, and handle
 ;; RFC 2047 encoding too.
+
+(provide 'save-attachments)
 
 (defvar sjt/debug-save-attachments nil)
 
@@ -75,10 +75,32 @@ Mailman author_is_list is handled."
 		       al))))
     (nreverse al)))
 
+(defun sjt/scarf-filenames ()
+  (interactive)
+  (goto-char (point-min))
+  (save-match-data
+    (let ((filenames nil))
+      (while (search-forward "filename=" nil t)
+	(when (re-search-forward
+	       #r"=?\GB\(?:K\|2312\|18030\)\?\([bBqQ]\)\?\([^?]+\)\?="
+	       (point-at-eol) t)
+	  (setq filenames (cons (match-string 2) filenames))))
+      (pop-to-buffer (get-buffer-create "Filenames in message"))
+      (erase-buffer)
+      (setq filenames (nreverse filenames))
+      (while filenames
+	(insert (pop filenames) "\n"))
+      (goto-char (point-min))
+      (let ((sol (point)))
+	(while (not (eobp))
+	  (end-of-line)
+	  (sjt/decode-base64-gbk-region sol (point))
+	  (forward-line 1)
+	  (setq sol (point))))
+      )))
 
 (defvar sjt/academic-year "2018")
-(defun sjt/attachment-root ()
-  (file-name-as-directory (expand-file-name sjt/academic-year "~/VM/FILES")))
+(defun sjt/attachment-root () (file-name-as-directory "~/VM/CANDIDATES"))
 
 ;; #### These need to be checked against RFC 5322.
 (defconst sjt/mailbox-re #r"\<[-a-zA-Z0-9._]+")
@@ -175,14 +197,14 @@ Mailman author_is_list is handled."
       (let ((default-directory attachment-directory))
 	(if (not (file-exists-p gitdir))
 	    (shell-command "git init")
-	  (shell-command "git add -f .")
+	  (shell-command "git add -f -A")
 	  (shell-command "git commit -m 'Commit for save-all-attachments.'")))
       (message msg6)
       (let ((vm-mime-delete-after-saving t))
 	(vm-save-all-attachments nil attachment-directory))
       (message msg7)
       (let ((default-directory attachment-directory))
-	(shell-command "git add .")
+	(shell-command "git add -f -A")
 	(shell-command "git commit -m 'Commit for save-all-attachments.'"))
       (message "Done!")
       )))
