@@ -25,7 +25,8 @@ API and semantics are VM-conforming."
 	     (while (not (eobp))
 	       (skip-chars-forward nonspecials)
 	       (setq char (char-after))
-	       (cond ((looking-at "[ \t\n\r\f]")
+	       (cond ((null char))
+		     ((looking-at "[ \t\n\r\f]")
 		      ;; remove whitespace from parameter
 		      (delete-char 1))
 		     ((= char ?\\)
@@ -232,7 +233,7 @@ shorter pieces, rebuild it from them."
 				   param-list))
 	(count -1)
 	parsed-parameter charset value-charset can-display need-conversion
-	start)
+	start number value)
     (setq parsed-parameters (delete-if (lambda (x) (not (string= x name)))
 				       parsed-parameters
 				       :key #'first))
@@ -300,56 +301,173 @@ shorter pieces, rebuild it from them."
     (delete-region (match-beginning 0) (match-end 0)))
   (decode-coding-region (point) (point-max) coding))
 
-;; #### This function definition is INCOMPLETE!!
-; (defun sjt/vm-get-filename-from-content-disposition ()
-;   (interactive)
-;   (let ((case-fold-search t)
-; 	(message-buffer (current-buffer))
-; 	(value nil)
-; 	(encoding nil)
-; 	(parameters nil)
-; 	(parameter nil)
-; 	(start nil))
-;     (unless (looking-at #r"^content-disposition\s-*:")
-;       ;; #### there should be a proper parameter parsing function in VM
-;       (error 'args-out-of-range "not looking-at content-disposition"))
-;     (goto-char (match-end 0))
-;     (skip-chars-forward "\t ")
-;     (setq start (point))
-;     ;; #### there should be a proper FWS unfolding function in VM
-;     (while (and (search-forward "\n" nil t) (looking-at #r"[ \t]"))
-;       (end-of-line))
-;     (setq parameters
-; 	  (sjt/vm-parse-structured-header (buffer-substring start (point))
-; 					  ?\; t))
-;     (setq parameters (delete-if
-; 		      (lambda (x)
-; 			(not (string= "filename"
-; 				      (substring-no-properties x 0 8))))
-; 		      parameters))
-;     (setq parameters (stable-sort parameters #'string<))
-;     (message "%S" parameters)))
-;     (setq value ""
-; 	  start 0)
-;     (while parameters
-;       (setq parameter (pop parameters))
-;       (unless (string= "filename" (substring-no-properties parameter 0 8))
-; 	(error 'invalid-state "parameter is not filename component" filename))
-;       (setq parameter (substring-no-properties parameter 8))
-;       (if (= (aref parameter 0) ?=)
-; 	  (if (= (aref parameter 1) ?\")
-; 	      (setq value
-; 		    (concat value (substring-no-properties parameter 2 -1)))
-; 	    (setq value (concat value (substring-no-properties parameter 1))))
-; 	(when (= (aref parameter 0) ?*)
-; 	  (setq parameter (substring-no-properties parameter 1)))
-; 	(if (= (string-to-number parameter) start)
-; 	    (incf start)
-; 	  (error 'invalid-state "out-of-order filename component at " start))
-; 	(
-;     ))
+(defconst sjt/parse-rfc2231-filename-parameter-re
+   (concat #r"\(filename\*\)"		; 1 "filename*"
+	   #r"\(?:\([0-9]+\)\*\)?="	; 2 ordinal
+	   ;; #### Optional "'" is not right.
+	   #r"\(?:\([^']*\)'\)?"	; 3 encoding
+	   #r"\(?:\([^']*\)'\)?"	; 4 language
+	   #r"\([^ ;]*\);?"		; 5 text
+	   ))
 
-;; #### This function is UNCHANGED from vm-mime.el eversion.
+(defun sjt/test-parse-rfc2231-filename-parameter-re ()
+  (interactive)
+  (back-to-indentation)
+  (save-match-data
+    (looking-at sjt/parse-rfc2231-filename-parameter-re)
+    (list (match-string 1)
+	  (match-string 2)
+	  (match-string 3)
+	  (match-string 4)
+	  (match-string 5))))
+
+(defun sjt/forward-header-field (&optional count buffer)
+  "Move forward COUNT \(default 1\) header fields in BUFFER \(default current\).
+If negative, move backward.  Return t if COUNT fields were moved, else nil.
+The header field includes the trailing newline if any.  Does not change mark."
+  (interactive "pi")
+  ;; #### Should save-excursion here?
+  (set-buffer (or buffer (current-buffer)))
+  (setq count (or count 1))
+
+  (labels
+      ((bohp ()
+	 ;; beginning-of-header-p
+	 ;; #### Close enough as long as we count From as part of the header.
+	 (or (bobp)
+	     (save-excursion
+	       (forward-line -1)
+	       (and (eolp) (bolp)))))
+       (eohp ()
+	 ;; end-of-header-p
+	 (or (eobp)
+	     (and (eolp) (bolp))))
+       (bohfp ()
+	 ;; beginning-of-header-field-p
+	 (looking-at "^[A-Za-z]"))	; #### Not RFC-ly correct.
+       (hfbp ()
+	 ;; header-field-boundary-p
+	 ;; Same as end-of-header-field-p except at the beginning of header.
+	 ;; beginning of header is annoying to check in mbox.
+	 (or (eohp) (bohfp))))
+    (let ((direction (signum count))
+	  (count (abs count))
+	  (pt (point))
+	  (done nil))
+      ;; Move once to handle middle of line case.
+      (cond ((< direction 0) (beginning-of-line))
+	    ((> direction 0) (forward-line 1)))
+      ;; If we moved and we're at a boundary, count it.
+      (when (and (= pt (point)) (hfbp))
+	(decf count))
+      ;; Do remaining movement.
+      (while (and (> count 0) (not done))
+	(setq pt (point))
+	(while (not (hfbp))
+	  (forward-line direction))
+	(unless (= pt (point))
+	  (decf count))
+	(when (or (and (< direction 0) (bohp))
+		  (and (> direction 0) (eohp)))
+	  (setq done t))))))
+    
+
+(defun sjt/mark-header-field (&optional count)
+  "Mark the text from point until encountering the end of a header field.
+With optional argument COUNT, mark COUNT fields.  COUNT negative means to
+mark backwards."
+  (interactive "p")
+  (mark-something 'sjt/mark-header-field 'sjt/forward-header-field count))
+
+
+(defun sjt/check-field (field-name-re)
+  (interactive "sField name regexp: ")
+  (unless (looking-at (concat #r"^\(" field-name-re #r"\)\s-*:"))
+    (error 'args-out-of-range (format "not looking-at %s" field-name-re))))
+
+
+(defun replace-quoted-hex-with-bytes (start end-marker &optional buffer)
+  (save-excursion
+    (goto-char start buffer)
+    ;; Handle both MIME quoted-printable (?= quoted) and RFC 2231 and
+    ;; URL-escaped (?%-quoted) encodings.
+    ;; #### Assumes first character (at point) is quote character.
+    ;; #### Currently stops if it finds an unescaped character.
+    (let ((quote-char (char-after)))
+      (while (and (= (char-after) quote-char)
+		  (< (point) end-marker))
+	(delete-char 1)
+	(insert (int-to-char
+		 (string-to-number (buffer-substring (point) (+ (point) 2))
+				   16)))
+	(delete-char 2)))))
+
+;; #### Should use #'sjt/vm-parse-rfc2231-segment.
+(defun sjt/vm-get-filename-from-content-disposition ()
+  (interactive)
+  (let ((case-fold-search t)
+	(value nil)
+	(encoding nil)
+	(parameters nil)
+	(parameter nil)
+	(start nil))
+    (save-match-data
+      (sjt/check-field "content-disposition")
+      (goto-char (match-end 0))
+      (setq parameters
+	    (sjt/vm-parse-structured-header (buffer-substring
+					     (point)
+					     (save-excursion
+					       (sjt/forward-header-field 1)
+					       (point)))
+					    ?\; t))
+      (setq parameters (delete-if
+			(lambda (x)
+			  (not (string-match "^filename" x)))
+			parameters))
+      (setq parameters (stable-sort parameters #'string<))
+      (setq value "")
+      (setq start 0)
+      (while parameters
+	(setq parameter (pop parameters))
+	(string-match sjt/parse-rfc2231-filename-parameter-re parameter)
+	(let ((filename (match-string 1 parameter))
+	      (ordinal (match-string 2 parameter))
+	      (enc (match-string 3 parameter))
+	      (language (match-string 4 parameter))
+	      (text (match-string 5 parameter)))
+	  (setq ordinal (if ordinal (string-to-number ordinal) 0))
+	  (when enc (setq enc (intern (downcase enc))))
+	  (when language (setq language (downcase language)))
+	  (when (not (string= filename "filename*"))
+	    (error 'args-out-of-range "not a filename parameter" filename))
+	  (unless (= start ordinal)
+	    (error 'args-out-of-range "missing filename parameter" start))
+	  (if (= start 0)
+	      (setq encoding enc)
+	    (when (or enc language)
+	      (error 'args-out-of-range "encoding or language after start"
+		     enc language)))
+	  (setq value (concat value text))
+	  (incf start))))
+    ;; #### should use parse-rfc2231-token
+    (with-temp-buffer
+      (insert value)
+      (goto-char (point-min))
+      (while (not (eobp))
+	(if (not (equal (char-after) ?%))
+	    (forward-char 1)
+	  (delete-char 1)
+	  (insert (int-to-char
+		   (string-to-number (buffer-substring (point) (+ (point) 2))
+				     16)))
+	  (delete-char 2)))
+      (decode-coding-region (point-min) (point-max) encoding)
+      (setq value (buffer-substring)))
+    (message "%s" value)
+    value))
+
+;; #### This function is UNCHANGED from vm-mime.el version.
 ; (defun vm-mime-get-xxx-parameter-internal (name param-list)
 ;   "Return the parameter NAME from PARAM-LIST."
 ;   (let ((match-end (1+ (length name)))
