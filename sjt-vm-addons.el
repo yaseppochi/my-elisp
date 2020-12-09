@@ -1,7 +1,47 @@
 (provide 'sjt-vm-addons)
+
+;;; End-user utilities (not just VM)
+
+(defun sjt/find-quoted-hex (&optional quote-chars)
+  "Search forward from point for quoted hex code.
+
+Optional QUOTE-CHARS is a string containing characters that are recognized
+as hex-quoting characters, \"=%\" by default."
+  (interactive "i")
+  (re-search-forward (concat ?[ (or quote-chars "%=") ?] "[0-9A-Fa-f]\{2\}")))
+
+
+(defun sjt/replace-quoted-hex-with-bytes (start end-marker &optional buffer)
+  "Replace quoted hex with bytes in region.
+
+The character at START is taken as the quote character.  Replaces until end
+of region or parsing fails.
+BUG: The quote character is deleted before the parsing of the hex code, and
+not replaced if the parse fails."
+  (interactive "r")
+  (save-excursion
+    (goto-char start buffer)
+    ;; Handle both MIME quoted-printable (?= quoted) and RFC 2231 and
+    ;; URL-escaped (?%-quoted) encodings.
+    ;; #### Assumes first character (at point) is quote character.
+    ;; #### Currently stops if it finds an unescaped character.
+    (let ((quote-char (char-after)))
+      (while (and (= (char-after) quote-char)
+		  (< (point) end-marker))
+	(delete-char 1)
+	(insert (int-to-char
+		 (string-to-number (buffer-substring (point) (+ (point) 2))
+				   16)))
+	(delete-char 2)))))
+
+
+;;; Header parsing
+
+;; #### This should be sjt/vm-parse-structured-FIELD.
 (defun sjt/vm-parse-structured-header (field-body &optional sepchar keep-quotes)
   "Return a list of parameters parsed from FIELD-BODY per RFC 2047. #### CHECK!!
-SEPCHAR is a character used to separate parameters in the field body.
+SEPCHAR is a character used to separate parameters in the field body, default
+  semicolon.
 KEEP-QUOTES non-nil means to preserve double quotation marks in the field body.
 API and semantics are VM-conforming."
   (if (null field-body)
@@ -99,9 +139,22 @@ API and semantics are VM-conforming."
 	     (nreverse list))
 	(and work-buffer (kill-buffer work-buffer)))))))
 
-;; Originally I had RFC 2184 as the reference, but it is totally broken
-;; (inconsistent specifications of initial fragment count, example ignores
-;; charset/language processing in last fragment).
+;;; RFC 2231 handling
+
+;; RFC 2231 provides a robust protocol to handle multilingual or
+;; multicharset values in the header.  RFC 2047 is frequently used
+;; for Japanese in the 'name' parameter of Content-Type, but this
+;; is prohibited by the RFC (not sure why).  Pragmatically, long
+;; parameter values will need to be split across lines to stay within
+;; the mandated 76-character line limit.  Doing this with MIME words
+;; is problematic because of less robust treatment by MUAs of FWS.
+
+;; RFC 2231 is specifically for use in parameters in Content-Type and
+;; Content-Disposition fields.  Like RFC 2047, RFC 2231 permits
+;; arbitrary text to be encoded as multiple RFC 5322 atoms or quoted
+;; text that fits within the recommended line length.  (Unlike RFC
+;; 2047, RFC 2231 doesn't mandate a maximum line length.)
+
 (defconst sjt/rfc822-specials ".()<>@,;:\\\"[]")
 (defconst sjt/rfc2231-tspecials "()<>@,;:\\\"/[]?=")
 (defconst sjt/rfc2231-aspecials "'*%")
@@ -121,10 +174,8 @@ API and semantics are VM-conforming."
 ;; (apply #'+ (mapcar #'length (list sjt/rfc2231-aspecials
 ;;				  sjt/rfc2231-tspecials
 ;;				  sjt/rfc2231-attribute-characters)))
-(defun sjt/extend-extent-and-wait (e)
-  (set-extent-endpoints e (extent-start-position e) (point))
-  (sit-for 1))
 
+;; Used in my version of vm-mime-get-xxx-parameter.
 (defun sjt/vm-parse-rfc2231-segment-string (s)
   "Wrapper for sjt/vm-parse-rfc2231-segment."
   (with-temp-buffer
@@ -139,159 +190,101 @@ API and semantics are VM-conforming."
 returning (NAME NUMBER CHARSET LANG VALUE).  Advance point to end of segment.
 NAME, CHARSET, and LANG are strings.  NUMBER is an integer.
 
-Assumes line is already unfolded.
+SEGMENT := NAME '*=' ENCODED-VALUE
+         | NAME '*0=' VALUE
+         | NAME '*0*=' [CHARSET] <'> [LANGUAGE] <'> ENCODED-VALUE
+         | NAME '*' NUMBER '=' VALUE
+         | NAME '*' NUMBER '*=' ENCODED-VALUE
 
-FRAGMENT := NAME ['*' [NUMBER '*'] '=' [[CHARSET] <'> [LANGUAGE] <'>] VALUE
 where NAME, CHARSET, and LANGUAGE are tokens, NUMBER is a decimal natural
-number, and VALUE is a token or quoted string.
+number, VALUE is a token or quoted string, and ENCODED-VALUE is %-encoded.
 In the return value NAME, LANGUAGE, and VALUE are strings, NUMBER is a fixnum,
-and CHARSET is a symbol.  VALUE may be encoded but is not delimited by quotes."
+and CHARSET is a symbol.  VALUE may be encoded but is not delimited by quotes.
+
+It's not clear from RFC 2231 whether in the third form the apostrophes can be
+omitted if CHARSET and LANGUAGE are both empty, but parser treats them as
+required."
   (interactive (list (point-at-eol)))
 
   (let (name number charset lang value	; return values
-	     start extendedp)	; temporary variables
-    (setq start (point))
+	extendedp)			; temporary variables
 
-    ;; Parse attribute name.
-    (skip-chars-forward sjt/rfc2231-attribute-characters)
-    (setq name (buffer-substring start (point)))
+    (labels
+	((parse-value (type)
+	   (let ((start (point)))
+	     (skip-chars-forward type end)
+	     (unless (= start (point))
+	       (buffer-substring start (point)))))
+	 )
 
-    ;; Parse segment information.
-    (unless (= ?= (char-after))
-      ;; check that we got *
-      (if (not (= ?* (char-after)))
-	  (error 'args-out-of-range "expected ?* or ?= at point")
-	(forward-char 1)		; skip over *
-	;; look for a sequence number
+      ;; Parse attribute name.
+      (skip-chars-forward " \t" end)
+      (setq name (or (parse-value sjt/rfc2231-attribute-characters)
+		     (error 'args-out-of-range "expected non-empty name")))
+
+      ;; Parse segment information.
+      (unless (= ?= (char-after))
+	;; check that we got *
+	(if (not (= ?* (char-after)))
+	    (error 'args-out-of-range "expected ?* or ?= at point")
+	  (forward-char 1)		; skip over *
+	  ;; look for a sequence number
+	  (setq number (parse-value "0-9"))
+	  (if (null number)
+	      (setq extendedp t)	; no number, but encoded value
+	    (when (= ?* (char-after))
+	      (setq extendedp t)	; we have an encoded value
+	      (forward-char 1))		; skip over *
+	    )))
+
+      ;; Parse =.
+      (unless (= ?= (char-after))
+	;; check that we got =
+	(error 'args-out-of-range "expected ?= at point"))
+      (forward-char 1)			; skip over =
+
+      ;; Parse charset or language information.
+      ;; Charset/lang is allowed only on first segment or only segment.
+      (when (and extendedp (or (eql number 0) (eql number nil)))
+	;; #### What was this for?
+	;; (setq start (point))
+	;; (skip-chars-forward sjt/rfc2231-attribute-characters)
+	(unless (= ?\' (char-after))
+	  ;; check that we got '
+	  (error 'args-out-of-range "expected ?\' at point"))
+	(unless (= start (point))
+	  (setq charset (downcase (buffer-substring start (point)))))
+	(forward-char 1)			; skip over '
 	(setq start (point))
-	(skip-chars-forward "0-9")
-	(if (= start (point))
-	    ;; we've not moved, so no number
-	    (setq extendedp t)		; but we have a charset or language
-	  ;; we've moved, scarf the number
-	  (setq number (string-to-number (buffer-substring start (point))))
-	  (when (= ?* (char-after))
-	    (setq extendedp t)		; we have a charset or language
-	    (forward-char 1))		; skip over *
-	  )))
+	(skip-chars-forward sjt/rfc2231-attribute-characters)
+	(unless (= ?\' (char-after))
+	  ;; check that we got '
+	  (error 'args-out-of-range "expected ?\' at point"))
+	(unless (= start (point))
+	  (setq lang (buffer-substring start (point))))
+	(forward-char 1)			; skip over '
+	)
 
-    ;; Parse =.
-    (unless (= ?= (char-after))
-      ;; check that we got =
-      (error 'args-out-of-range "expected ?= at point"))
-    (forward-char 1)			; skip over =
 
-    ;; Parse charset or language information.
-    ;; Charset/lang is allowed only on first segment or only segment.
-    (if (not (and extendedp (or (eql number 0) (eql number nil))))
-	(setq charset extendedp)
+      ;; Parse value.
       (setq start (point))
-      (skip-chars-forward sjt/rfc2231-attribute-characters)
-      (unless (= ?\' (char-after))
-	;; check that we got '
-	(error 'args-out-of-range "expected ?\' at point"))
-      (unless (= start (point))
-	(setq charset (downcase (buffer-substring start (point)))))
-      (forward-char 1)			; skip over '
-      (setq start (point))
-      (skip-chars-forward sjt/rfc2231-attribute-characters)
-      (unless (= ?\' (char-after))
-	;; check that we got '
-	(error 'args-out-of-range "expected ?\' at point"))
-      (unless (= start (point))
-	(setq lang (buffer-substring start (point))))
-      (forward-char 1)			; skip over '
-      )
+      (if extendedp
+	  ;; Must not contain a quoted string.
+	  (progn (skip-chars-forward sjt/rfc2231-token-characters)
+		 (setq value (buffer-substring start (point))))
+	;; #### We don't get quoted strings from VM,
+	;; and it might contain MIME-words and newlines. :-(
+	(setq value (buffer-substring start))
+	(when ; (and 
+	       (search-forward "=?" nil t)
+		  ; (y-or-n-p (format "Decode MIME words: %s " value)))
+	  (vm-decode-mime-encoded-words start)
+	  (setq value (buffer-substring start))))
 
-    ;; Parse value.
-    (setq start (point))
-    (if extendedp
-	;; Must not contain a quoted string.
-	(progn (skip-chars-forward sjt/rfc2231-token-characters)
-	       (setq value (buffer-substring start (point))))
-      ;; #### We don't get quoted strings from VM,
-      ;; and it might contain MIME-words and newlines. :-(
-      (setq value (buffer-substring start))
-      (when ; (and 
-	     (search-forward "=?" nil t)
-		; (y-or-n-p (format "Decode MIME words: %s " value)))
-	(vm-decode-mime-encoded-words start)
-	(setq value (buffer-substring start))))
-
-    ;; Return list of parsed items.
-;     (message "%S" (list name number charset lang
-; 			(substring value 0 (min (length value) 40))))
-    (list name number charset lang value)))
-
-(defun vm-mime-get-xxx-parameter (name param-list)
-  "Return the parameter NAME from PARAM-LIST.
-
-If parameter value continuations was used, i.e. the parameter was split into
-shorter pieces, rebuild it from them."
-  ;; (message "Retrieving parameter %s at %s in %s" name (point) (current-buffer))
-  (let ((parsed-parameters (mapcar #'sjt/vm-parse-rfc2231-segment-string
-				   param-list))
-	(count -1)
-	parsed-parameter charset value-charset can-display need-conversion
-	start number value)
-    (setq parsed-parameters (delete-if (lambda (x) (not (string= x name)))
-				       parsed-parameters
-				       :key #'first))
-    ;; The test here is to return nil, not the empty string, if there are
-    ;; parameters left.
-    (when parsed-parameters
-      (setq parsed-parameters (sort* parsed-parameters #'< :key #'second))
-      (with-temp-buffer
-	(setq start (point-min))
-	(while parsed-parameters
-	  (setq parsed-parameter (pop parsed-parameters)
-		number (second parsed-parameter)
-		charset (third parsed-parameter)
-		;; Ignore language.
-		value (fifth parsed-parameter)
-		count (1+ count))
-; 	  (message "%s" (if (null number)
-; 			    "only segment"
-; 			  (format "segment %d" number)))
-
-	  ;; error-checking, and determine if we can decode the charset and
-	  ;; how to do so
-	  (cond ((and (= count 0) (null number)))
-		((eql count number))
-		(t (error 'args-out-of-range "expected segment" count
-			  "but got" number)))
-	  (when (and (= count 0) (setq value-charset charset))
-	    (setq can-display
-		  (vm-mime-charset-internally-displayable-p value-charset))
-	    (unless can-display
-	      (setq need-conversion
-		    (vm-mime-can-convert-charset value-charset))))
-; 	  (message "%S %S" value-charset parsed-parameter)
-; 	  (sit-for 1)
-
-	  ;; insert the value at the end of the buffer
-	  (insert value)
-
-	  ;; decode octets if needed
-	  (when charset
-	    (goto-char start)
-	    (while (re-search-forward "%\\([0-9A-Fa-f][0-9A-Fa-f]\\)" nil t)
-	      (goto-char (match-end 0))
-	      (insert (int-to-char (string-to-number (match-string 1) 16)))
-	      (delete-region (match-beginning 0) (match-end 0))))
-
-	  ;; go to end of buffer and reset start
-	  (goto-char (point-max))
-	  (setq start (point)))
-	(if (and (not can-display) need-conversion)
-	    (setq charset (vm-mime-charset-convert-region
-			   value-charset (point-min) (point-max)))
-	  (setq charset value-charset))
-	(when (or can-display need-conversion)
-	  (vm-mime-charset-decode-region charset (point-min) (point-max)))
-;  	(unless (y-or-n-p (format "Return %S " (buffer-substring)))
-;  	  (error 'invalid-argument "Something's wrong."))
-	(buffer-substring)))))
+      ;; Return list of parsed items.
+  ;     (message "%S" (list name number charset lang
+  ; 			(substring value 0 (min (length value) 40))))
+      (list name number charset lang value)))
 
 (defun sjt/decode-rfc2231-token (start end coding)
   (interactive "r\nzCoding system: ")
@@ -386,22 +379,6 @@ mark backwards."
     (error 'args-out-of-range (format "not looking-at %s" field-name-re))))
 
 
-(defun replace-quoted-hex-with-bytes (start end-marker &optional buffer)
-  (save-excursion
-    (goto-char start buffer)
-    ;; Handle both MIME quoted-printable (?= quoted) and RFC 2231 and
-    ;; URL-escaped (?%-quoted) encodings.
-    ;; #### Assumes first character (at point) is quote character.
-    ;; #### Currently stops if it finds an unescaped character.
-    (let ((quote-char (char-after)))
-      (while (and (= (char-after) quote-char)
-		  (< (point) end-marker))
-	(delete-char 1)
-	(insert (int-to-char
-		 (string-to-number (buffer-substring (point) (+ (point) 2))
-				   16)))
-	(delete-char 2)))))
-
 ;; #### Should use #'sjt/vm-parse-rfc2231-segment.
 (defun sjt/vm-get-filename-from-content-disposition ()
   (interactive)
@@ -466,6 +443,80 @@ mark backwards."
       (setq value (buffer-substring)))
     (message "%s" value)
     value))
+
+
+;;; Monkey-patch VM stuff
+
+(defun vm-mime-get-xxx-parameter (name param-list)
+  "Return the parameter NAME from PARAM-LIST.
+
+If parameter value continuations was used, i.e. the parameter was split into
+shorter pieces, rebuild it from them."
+  ;; (message "Retrieving parameter %s at %s in %s"
+  ;;          name (point) (current-buffer))
+  (let ((parsed-parameters (mapcar #'sjt/vm-parse-rfc2231-segment-string
+				   param-list))
+	(count -1)
+	parsed-parameter charset value-charset can-display need-conversion
+	start number value)
+    (setq parsed-parameters (delete-if (lambda (x) (not (string= x name)))
+				       parsed-parameters
+				       :key #'first))
+    ;; The test here is to return nil, not the empty string, if there are
+    ;; parameters left.
+    (when parsed-parameters
+      (setq parsed-parameters (sort* parsed-parameters #'< :key #'second))
+      (with-temp-buffer
+	(setq start (point-min))
+	(while parsed-parameters
+	  (setq parsed-parameter (pop parsed-parameters)
+		number (second parsed-parameter)
+		charset (third parsed-parameter)
+		;; Ignore language.
+		value (fifth parsed-parameter)
+		count (1+ count))
+; 	  (message "%s" (if (null number)
+; 			    "only segment"
+; 			  (format "segment %d" number)))
+
+	  ;; error-checking, and determine if we can decode the charset and
+	  ;; how to do so
+	  (cond ((and (= count 0) (null number)))
+		((eql count number))
+		(t (error 'args-out-of-range "expected segment" count
+			  "but got" number)))
+	  (when (and (= count 0) (setq value-charset charset))
+	    (setq can-display
+		  (vm-mime-charset-internally-displayable-p value-charset))
+	    (unless can-display
+	      (setq need-conversion
+		    (vm-mime-can-convert-charset value-charset))))
+; 	  (message "%S %S" value-charset parsed-parameter)
+; 	  (sit-for 1)
+
+	  ;; insert the value at the end of the buffer
+	  (insert value)
+
+	  ;; decode octets if needed
+	  (when charset
+	    (goto-char start)
+	    (while (re-search-forward "%\\([0-9A-Fa-f][0-9A-Fa-f]\\)" nil t)
+	      (goto-char (match-end 0))
+	      (insert (int-to-char (string-to-number (match-string 1) 16)))
+	      (delete-region (match-beginning 0) (match-end 0))))
+
+	  ;; go to end of buffer and reset start
+	  (goto-char (point-max))
+	  (setq start (point)))
+	(if (and (not can-display) need-conversion)
+	    (setq charset (vm-mime-charset-convert-region
+			   value-charset (point-min) (point-max)))
+	  (setq charset value-charset))
+	(when (or can-display need-conversion)
+	  (vm-mime-charset-decode-region charset (point-min) (point-max)))
+;  	(unless (y-or-n-p (format "Return %S " (buffer-substring)))
+;  	  (error 'invalid-argument "Something's wrong."))
+	(buffer-substring)))))
 
 ;; #### This function is UNCHANGED from vm-mime.el version.
 ; (defun vm-mime-get-xxx-parameter-internal (name param-list)
