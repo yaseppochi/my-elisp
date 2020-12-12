@@ -34,6 +34,8 @@ not replaced if the parse fails."
 				   16)))
 	(delete-char 2)))))
 
+(defconst rfc5234-prefixed t)
+(require 'rfc5234-defs)
 
 ;;; Header parsing
 
@@ -138,6 +140,75 @@ API and semantics are VM-conforming."
 		 (setq list (cons s list)))
 	     (nreverse list))
 	(and work-buffer (kill-buffer work-buffer)))))))
+
+;; RFC 5322 lexical tokens
+;; #### Some of these probably are from RFC 5234.  Deduplicate.
+
+;; #### Probably these should all be functions (or defsubsts) that match
+;; the construct and return (START END) if matched, else nil.
+
+(defconst rfc5322-quoted-pair-re #r"\\\(.\)"
+  "Match one RFC 5322 quoted pair.  Group 1 is the quoted character.")
+
+(defsubst rfc5322-parse-quoted-pair ()
+  "Parse one RFC 5322 quoted pair."
+  (when (looking-at rfc5322-quoted-pair-re)
+    (forward-char 1)
+    (list (1- (point)) (point))))
+
+(defconst rfc5322-wsp-re "[ \t]"   	; #### RFC 5234?
+  "Match one RFC 5322 whitespace character.")
+
+(defconst rfc5322-fws-re (concat #r"\(?:\(?:"
+				 rfc5322-wsp-re
+				 "*\\)?"
+				 rfc5322-wsp-re
+				 "+\\)")
+  "Match RFC 5322 folded whitespace.")	; #### or obs-fws
+
+(defsubst rfc5322-parse-fws ()
+  "Parse RFC 5322 folding whitespace."
+  (when (looking-at rfc5322-fws-re)
+    (let ((start (point)))
+      (goto-char (match-end 0))
+      (list start (point)))))
+
+(defconst rfc5322-ctext-re "[]!-'*-[^-~]" ; #### Need special treatment of [?
+  "Match RFC 5322 ctext.")
+
+(defsubst rfc5322-parse-ctext ()
+  "Parse one RFC 5322 ctext character."
+  (when (looking-at rfc5322-ctext-re)
+    (forward-char 1)
+    (list (1- (point)) (point))))
+
+(defsubst rfc5322-parse-ccontent ()
+  "Parse RFC 5322 ccontent and position point at end."
+  (cond ((rfc5322-parse-quoted-pair))
+	((looking-at rfc5322-ctext-re) (forward-char 1))
+	((char= ?\( (char-after)) (rfc5322-parse-comment))))
+
+(defsubst rfc5322-parse-comment ()
+  "Parse RFC 5322 comment, position point at end, and return (START END).
+
+If not looking-at \"(\" when called, return nil.
+If the opening parenthesis is not matched, move past the parenthesis,
+returning (START (1+ START))."
+  (when (char= ?\( (char-after))
+    (let ((start (point)))
+      (forward-char 1)
+      (while (or (rfc5322-parse-fws) (rfc5322-parse-ccontent)))
+      (if (char= ?\) (char-after))
+	  (forward-char 1)
+	(goto-char (1+ start)))
+      (list start (point)))))
+
+(defsubst rfc5322-parse-cfws ()
+  "Match RFC 5322 CFWS, position point at end, and return (START END)."
+  (let ((start (point)))
+    (while (or (rfc5322-parse-fws) (rfc5322-parse-comment)))
+    (when (not (= start (point)))	; If not moved, return nil.
+      (list start (point)))))
 
 ;;; RFC 2231 handling
 
@@ -246,9 +317,6 @@ required."
       ;; Parse charset or language information.
       ;; Charset/lang is allowed only on first segment or only segment.
       (when (and extendedp (or (eql number 0) (eql number nil)))
-	;; #### What was this for?
-	;; (setq start (point))
-	;; (skip-chars-forward sjt/rfc2231-attribute-characters)
 	(unless (= ?\' (char-after))
 	  ;; check that we got '
 	  (error 'args-out-of-range "expected ?\' at point"))
