@@ -1,5 +1,7 @@
 (provide 'sjt-vm-addons)
 
+(require 'rfc5234-defs)
+
 ;;; End-user utilities (not just VM)
 
 (defun sjt/find-quoted-hex (&optional quote-chars)
@@ -33,9 +35,6 @@ not replaced if the parse fails."
 		 (string-to-number (buffer-substring (point) (+ (point) 2))
 				   16)))
 	(delete-char 2)))))
-
-(defconst rfc5234-prefixed t)
-(require 'rfc5234-defs)
 
 ;;; Header parsing
 
@@ -142,29 +141,27 @@ API and semantics are VM-conforming."
 	(and work-buffer (kill-buffer work-buffer)))))))
 
 ;; RFC 5322 lexical tokens
-;; #### Some of these probably are from RFC 5234.  Deduplicate.
+;;
+;; Parenthesization and content extraction is left to calling code.
 
-;; #### Probably these should all be functions (or defsubsts) that match
-;; the construct and return (START END) if matched, else nil.
+;; #### Do we need the *-re versions?
+;; #### We should optimize by leaving out the return values for non-tokens.
 
-(defconst rfc5322-quoted-pair-re #r"\\\(.\)"
-  "Match one RFC 5322 quoted pair.  Group 1 is the quoted character.")
+(defconst rfc5322-quoted-pair-re
+  (concat #r"\\[" rfc5234-vchar rfc5234-wsp "]")
+  "Match one RFC 5322 quoted pair.")
 
 (defsubst rfc5322-parse-quoted-pair ()
   "Parse one RFC 5322 quoted pair."
   (when (looking-at rfc5322-quoted-pair-re)
-    (forward-char 1)
-    (list (1- (point)) (point))))
+    (forward-char 2)
+    (list (- (point) 2) (point))))
 
-(defconst rfc5322-wsp-re "[ \t]"   	; #### RFC 5234?
-  "Match one RFC 5322 whitespace character.")
-
-(defconst rfc5322-fws-re (concat #r"\(?:\(?:"
-				 rfc5322-wsp-re
-				 "*\\)?"
-				 rfc5322-wsp-re
-				 "+\\)")
-  "Match RFC 5322 folded whitespace.")	; #### or obs-fws
+;; Don't use rfc5234 LWS.
+(defconst rfc5322-fws-re
+  (concat "\\(?:" rfc5234-wsp-re "*" rfc5234-crlf "\\)?"
+	  rfc5234-wsp-re "+")
+  "Match RFC 5322 folded whitespace.")	; #### or with obs-fws
 
 (defsubst rfc5322-parse-fws ()
   "Parse RFC 5322 folding whitespace."
@@ -173,7 +170,7 @@ API and semantics are VM-conforming."
       (goto-char (match-end 0))
       (list start (point)))))
 
-(defconst rfc5322-ctext-re "[]!-'*-[^-~]" ; #### Need special treatment of [?
+(defconst rfc5322-ctext-re "[]!-'*-[^-~]"
   "Match RFC 5322 ctext.")
 
 (defsubst rfc5322-parse-ctext ()
