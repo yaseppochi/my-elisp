@@ -1,6 +1,6 @@
-;;; rfc5234-defs --- RFC 5234 core ABNF element definitions
+;;; rfc5234-core --- RFC 5234 core ABNF element definitions
 
-(provide 'rfc5234-defs)
+(provide 'rfc5234-core)
 
 ;; In supporting RFC 5322 parsing, it is frequently convenient to have both
 ;; a regular expression version and a character class version.  Define
