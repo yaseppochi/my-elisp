@@ -1,6 +1,6 @@
 (provide 'sjt-vm-addons)
 
-(require 'rfc5234-defs)
+(require 'rfc5234-core)
 
 ;;; End-user utilities (not just VM)
 
