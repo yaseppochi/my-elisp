@@ -36,6 +36,217 @@ not replaced if the parse fails."
 				   16)))
 	(delete-char 2)))))
 
+;;; RFC 5322 lexical tokens
+;;
+;; Parenthesization and content extraction is left to calling code.
+
+;; #### Do we need the *-re versions?
+;; #### We should optimize by leaving out the return values for non-tokens.
+
+;; Mly's rfc822.el uses regexps a lot more, and probably is faster for that.
+
+;; RFC 5322 utility classes
+
+(defconst rfc5322-quoted-pair-re
+  (concat #r"\\[" rfc5234-vchar rfc5234-wsp "]")
+  "Match one RFC 5322 quoted pair.")
+
+(defsubst rfc5322-parse-quoted-pair ()
+  "Parse one RFC 5322 quoted pair."
+  (when (looking-at rfc5322-quoted-pair-re)
+    (forward-char 2)
+    (list (- (point) 2) (point))))	; for rfc5322-skip-qcontent
+
+;; These two defconsts aren't real RFC 5322 ABNF.
+(defconst rfc5322-vchars-re (concat "[" rfc5234-vchar "]+"))
+(defconst rfc5322-wschars-re (concat rfc5234-wsp-re "+"))
+
+(defconst rfc5322-specials #r"].()<>@,;:\\\"[")
+(defconst rfc5322-specials-re (concat "[" rfc5322-specials "]"))
+
+;; RFC 5322 whitespace and comments
+;; These are classed together because comments are semantic nulls in
+;; RFC 5322 processing.  Higher levels never see them.
+
+;; Don't use rfc5234 LWS.
+(defconst rfc5322-fws-re
+  (concat "\\(?:" rfc5234-wsp-re "*" rfc5234-crlf "\\)?"
+	  rfc5234-wsp-re "+")
+  "Match RFC 5322 folded whitespace.")	; #### or with obs-fws
+
+(defsubst rfc5322-parse-fws ()
+  "Parse RFC 5322 folding whitespace.
+
+This definition tries to prevent blank lines itself, but care should be
+taken to avoid repetition of this expression when parsing."
+  (when (looking-at rfc5322-fws-re)
+    (let ((start (point)))
+      (goto-char (match-end 0))
+      (list start (point)))))
+
+(defconst rfc5322-ctext-re "[]!-'*-[^-~]"
+  "Match RFC 5322 ctext.")
+
+(defsubst rfc5322-parse-ctext ()
+  "Parse one RFC 5322 ctext character."
+  (when (looking-at rfc5322-ctext-re)
+    (forward-char 1)
+    (list (1- (point)) (point))))
+
+;; #### I think this is an accurate translation of the ABNF.
+;; However, it is unclear what is to be done with an unclosed open parenthesis
+;; followed by a comment.  This code parses as an open parenthesis, followed
+;; by an optional run of ctext, followed by a comment.  Perhaps it would be
+;; better to parse the *inner* open parenthesis as unclosed.  That would be
+;; much more complicated to implement, though.
+(defsubst rfc5322-parse-ccontent ()
+  "Parse RFC 5322 ccontent and position point at end."
+  (cond ((rfc5322-parse-quoted-pair))
+	((looking-at rfc5322-ctext-re) (forward-char 1))
+	((char= ?\( (char-after)) (rfc5322-parse-comment))))
+
+(defsubst rfc5322-parse-comment ()
+  "Parse RFC 5322 comment, position point at end, and return (START END).
+
+If not looking-at \"(\" when called, return nil.
+If the opening parenthesis is not matched, move past the parenthesis,
+returning (START (1+ START))."
+  (when (char= ?\( (char-after))
+    (let ((start (point)))
+      (forward-char 1)
+      (while (or (rfc5322-parse-fws) (rfc5322-parse-ccontent)))
+      (if (char= ?\) (char-after))
+	  (forward-char 1)
+	(goto-char (1+ start)))
+      (list start (point)))))
+
+(defsubst rfc5322-parse-cfws ()
+  "Match RFC 5322 CFWS, position point at end, and return (START END)."
+  (let ((start (point)))
+    (while (or (rfc5322-parse-fws) (rfc5322-parse-comment)))
+    (when (not (= start (point)))	; If not moved, return nil.
+      (list start (point)))))
+
+;; RFC 5322 atoms
+
+(defconst rfc5322-atext-re
+  (concat "[" rfc5234-alpha rfc5234-digit "!#$%&'*+-/=_^_`{|}~" "]+")
+  "This is a non-empty sequence of atext as defined in RFC 5322.")
+
+(defsubst rfc5322-parse-atom ()
+  "Parse RFC 5322 atom.  Returns (START END) for the atom only.
+
+Point may be past END.  Original point is forgotten."
+  (let ((start (point)) end)
+    ;; We don't care if the CFWS parses succeed.
+    ;; Note that atom atom allows a nonempty blank line.
+    (rfc5322-parse-cwfs)
+    (cond ((looking-at rfc5322-atext-re)
+	   (setq start (point))
+	   (goto-char (match-end 0))
+	   (setq end (point))
+	   (rfc5322-parse-cwfs)
+	   (list start end))
+	  (t (goto-char start)
+	     nil))))
+
+(defsubst rfc5322-parse-dot-atom ()
+  "Parse RFC 5322 dot atom.  Returned (START END) bounds the atom.
+
+If the parse fails (no atom), resets point to original position.
+This does not permit CFWS within the dot-atom.
+RFC 822 doesn't define this element and doesn't explicitly allow CFWS, but
+the examples regularly include it.  RFC 2822 defines it the same way, and
+in addresses obsoletes CFWS.
+Point may be past END.  Original point is forgotten."
+  (let ((origin (point)) start end)
+    ;; We don't care if the CFWS parses succeed.
+    (rfc5322-parse-cwfs)
+    (if (and (looking-at rfc5322-atext-re)
+	     (setq start (point))
+	     (goto-char (match-end 0))
+	     (setq end (point))
+	     (while (and (char= ?\. (char-after))
+			 ;; #### This probably signals at end-of-buffer.
+			 (progn (forward-char 1) t)
+			 (looking-at rfc5322-atext-re)
+			 (goto-char (match-end 0))
+			 (setq end (point))))
+	     (= end (point)))
+	(progn
+	  (rfc5322-parse-cwfs)
+	  (list start end))
+      (goto-char origin)
+      nil)))
+
+;; RFC 5322 quoted strings
+
+(defconst rfc5322-qtext-re "[\x21\x23-\x5B\x5D-\x7E]+")
+
+;; #### Make the parse/skip nomenclature consistent.  Document it.
+;; Maybe we don't need it?  This function needs to return status.
+(defsubst rfc5322-parse-qcontent ()
+  "Somewhat more aggressive than RFC 5322 definition."
+  (let ((origin (point)))		; use 'origin for if-moved
+    (while (or (when (looking-at rfc5322-qtext-re)
+		 (goto-char (match-end 0)))
+	       (rfc5322-parse-quoted-pair)))
+    (setq end (point))
+    (unless (= origin end)
+      (list origin end))))
+
+(defsubst rfc5322-parse-quoted-string ()
+  "Parse RFC 5322 quoted string.
+
+Returned (START END) bounds the quote, including the DQUOTEs."
+  (let ((origin (point)) start end)
+    ;; We don't care if the CFWS parses succeed.
+    (rfc5322-parse-cwfs)
+    (if (and (char= ?\" (char-after))
+	     (setq start (point))
+	     (progn (forward-char 1) t)
+	     (while (or (rfc5322-parse-fws)
+			(rfc5322-parse-qcontent)))
+	     (char= ?\" (char-after))
+	     (progn (forward-char 1) t)
+	     (setq end (point)))
+	(progn
+	  (rfc5322-parse-cwfs)
+	  (list start end))
+      (goto-char origin)
+      nil)))
+
+;; RFC 5322 higher-level utilities
+
+(defsubst rfc5322-parse-word ()
+  (or (rfc5322-parse-atom)
+      (rfc5322-parse-quoted-string)))
+
+(defsubst rfc5322-parse-phrase ()
+  (let ((origin (point)) start end)
+    (rfc5322-parse-cwfs)
+    (setq start (point))
+    (while (setq val (rfc5322-parse-word))
+      (setq end (nth 1 val)))
+    (if end
+	(list start end)
+      (goto-char origin)
+      nil)))
+
+(defsubst rfc5322-parse-unstructured ()
+  (let ((start (point)))
+    (while (if (rfc5322-parse-fws)
+	       (if (not (looking-at rfc5322-vchars-re))
+		   (error 'invalid-state
+			  (format "blank line in field at position %d"
+				  (point)))
+		 (goto-char (match-end 0)))
+	     (when  (looking-at rfc5322-vchars-re)
+		 (goto-char (match-end 0)))))
+    (when (looking-at rfc5322-wschars)
+      (goto-char (match-end 0)))
+    (list start (point))))
+
 ;;; Header parsing
 
 ;; #### This should be sjt/vm-parse-structured-FIELD.
@@ -139,204 +350,6 @@ API and semantics are VM-conforming."
 		 (setq list (cons s list)))
 	     (nreverse list))
 	(and work-buffer (kill-buffer work-buffer)))))))
-
-;; RFC 5322 lexical tokens
-;;
-;; Parenthesization and content extraction is left to calling code.
-
-;; #### Do we need the *-re versions?
-;; #### We should optimize by leaving out the return values for non-tokens.
-
-;; Mly's rfc822.el uses regexps a lot more, and probably is faster for that.
-
-(defconst rfc5322-quoted-pair-re
-  (concat #r"\\[" rfc5234-vchar rfc5234-wsp "]")
-  "Match one RFC 5322 quoted pair.")
-
-(defsubst rfc5322-parse-quoted-pair ()
-  "Parse one RFC 5322 quoted pair."
-  (when (looking-at rfc5322-quoted-pair-re)
-    (forward-char 2)
-    (list (- (point) 2) (point))))	; for rfc5322-skip-qcontent
-
-;; Don't use rfc5234 LWS.
-(defconst rfc5322-fws-re
-  (concat "\\(?:" rfc5234-wsp-re "*" rfc5234-crlf "\\)?"
-	  rfc5234-wsp-re "+")
-  "Match RFC 5322 folded whitespace.")	; #### or with obs-fws
-
-(defsubst rfc5322-parse-fws ()
-  "Parse RFC 5322 folding whitespace.
-
-This definition tries to prevent blank lines itself, but care should be
-taken to avoid repetition of this expression when parsing."
-  (when (looking-at rfc5322-fws-re)
-    (let ((start (point)))
-      (goto-char (match-end 0))
-      (list start (point)))))
-
-(defconst rfc5322-ctext-re "[]!-'*-[^-~]"
-  "Match RFC 5322 ctext.")
-
-(defsubst rfc5322-parse-ctext ()
-  "Parse one RFC 5322 ctext character."
-  (when (looking-at rfc5322-ctext-re)
-    (forward-char 1)
-    (list (1- (point)) (point))))
-
-;; #### I think this is an accurate translation of the ABNF.
-;; However, it is unclear what is to be done with an unclosed open parenthesis
-;; followed by a comment.  This code parses as an open parenthesis, followed
-;; by an optional run of ctext, followed by a comment.  Perhaps it would be
-;; better to parse the *inner* open parenthesis as unclosed.  That would be
-;; much more complicated to implement, though.
-(defsubst rfc5322-parse-ccontent ()
-  "Parse RFC 5322 ccontent and position point at end."
-  (cond ((rfc5322-parse-quoted-pair))
-	((looking-at rfc5322-ctext-re) (forward-char 1))
-	((char= ?\( (char-after)) (rfc5322-parse-comment))))
-
-(defsubst rfc5322-parse-comment ()
-  "Parse RFC 5322 comment, position point at end, and return (START END).
-
-If not looking-at \"(\" when called, return nil.
-If the opening parenthesis is not matched, move past the parenthesis,
-returning (START (1+ START))."
-  (when (char= ?\( (char-after))
-    (let ((start (point)))
-      (forward-char 1)
-      (while (or (rfc5322-parse-fws) (rfc5322-parse-ccontent)))
-      (if (char= ?\) (char-after))
-	  (forward-char 1)
-	(goto-char (1+ start)))
-      (list start (point)))))
-
-(defsubst rfc5322-parse-cfws ()
-  "Match RFC 5322 CFWS, position point at end, and return (START END)."
-  (let ((start (point)))
-    (while (or (rfc5322-parse-fws) (rfc5322-parse-comment)))
-    (when (not (= start (point)))	; If not moved, return nil.
-      (list start (point)))))
-
-(defconst rfc5322-atext-re
-  (concat "[" rfc5234-alpha rfc5234-digit "!#$%&'*+-/=_^_`{|}~" "]+")
-  "This is a non-empty sequence of atext as defined in RFC 5322.")
-
-(defsubst rfc5322-parse-atom ()
-  "Parse RFC 5322 atom.  Returns (START END) for the atom only.
-
-Point may be past END.  Original point is forgotten."
-  (let ((start (point)) end)
-    ;; We don't care if the CFWS parses succeed.
-    ;; Note that atom atom allows a nonempty blank line.
-    (rfc5322-parse-cwfs)
-    (cond ((looking-at rfc5322-atext-re)
-	   (setq start (point))
-	   (goto-char (match-end 0))
-	   (setq end (point))
-	   (rfc5322-parse-cwfs)
-	   (list start end))
-	  (t (goto-char start)
-	     nil))))
-
-(defsubst rfc5322-parse-dot-atom ()
-  "Parse RFC 5322 dot atom.  Returned (START END) bounds the atom.
-
-If the parse fails (no atom), resets point to original position.
-This does not permit CFWS within the dot-atom.
-RFC 822 doesn't define this element and doesn't explicitly allow CFWS, but
-the examples regularly include it.  RFC 2822 defines it the same way, and
-in addresses obsoletes CFWS.
-Point may be past END.  Original point is forgotten."
-  (let ((origin (point)) start end)
-    ;; We don't care if the CFWS parses succeed.
-    (rfc5322-parse-cwfs)
-    (if (and (looking-at rfc5322-atext-re)
-	     (setq start (point))
-	     (goto-char (match-end 0))
-	     (setq end (point))
-	     (while (and (char= ?\. (char-after))
-			 ;; #### This probably signals at end-of-buffer.
-			 (progn (forward-char 1) t)
-			 (looking-at rfc5322-atext-re)
-			 (goto-char (match-end 0))
-			 (setq end (point))))
-	     (= end (point)))
-	(progn
-	  (rfc5322-parse-cwfs)
-	  (list start end))
-      (goto-char origin)
-      nil)))
-
-(defconst rfc5322-specials #r"].()<>@,;:\\\"[")
-(defconst rfc5322-specials-re (concat "[" rfc5322-specials "]"))
-
-(defconst rfc5322-qtext-re "[\x21\x23-\x5B\x5D-\x7E]+")
-
-;; #### Make the parse/skip nomenclature consistent.  Document it.
-;; Maybe we don't need it?  This function needs to return status.
-(defsubst rfc5322-parse-qcontent ()
-  "Somewhat more aggressive than RFC 5322 definition."
-  (let ((origin (point)))		; use 'origin for if-moved
-    (while (or (when (looking-at rfc5322-qtext-re)
-		 (goto-char (match-end 0)))
-	       (rfc5322-parse-quoted-pair)))
-    (setq end (point))
-    (unless (= origin end)
-      (list origin end))))
-
-(defsubst rfc5322-parse-quoted-string ()
-  "Parse RFC 5322 quoted string.
-
-Returned (START END) bounds the quote, including the DQUOTEs."
-  (let ((origin (point)) start end)
-    ;; We don't care if the CFWS parses succeed.
-    (rfc5322-parse-cwfs)
-    (if (and (char= ?\" (char-after))
-	     (setq start (point))
-	     (progn (forward-char 1) t)
-	     (while (or (rfc5322-parse-fws)
-			(rfc5322-parse-qcontent)))
-	     (char= ?\" (char-after))
-	     (progn (forward-char 1) t)
-	     (setq end (point)))
-	(progn
-	  (rfc5322-parse-cwfs)
-	  (list start end))
-      (goto-char origin)
-      nil)))
-
-(defsubst rfc5322-parse-word ()
-  (or (rfc5322-parse-atom)
-      (rfc5322-parse-quoted-string)))
-
-(defsubst rfc5322-parse-phrase ()
-  (let ((origin (point)) start end)
-    (rfc5322-parse-cwfs)
-    (setq start (point))
-    (while (setq val (rfc5322-parse-word))
-      (setq end (nth 1 val)))
-    (if end
-	(list start end)
-      (goto-char origin)
-      nil)))
-
-;; These two defconsts aren't real RFC 5322 ABNF.
-(defconst rfc5322-vchars-re (concat "[" rfc5234-vchar "]+"))
-(defconst rfc5322-wschars-re (concat rfc5234-wsp-re "+"))
-(defsubst rfc5322-parse-unstructured ()
-  (let ((start (point)))
-    (while (if (rfc5322-parse-fws)
-	       (if (not (looking-at rfc5322-vchars-re))
-		   (error 'invalid-state
-			  (format "blank line in field at position %d"
-				  (point)))
-		 (goto-char (match-end 0)))
-	     (when  (looking-at rfc5322-vchars-re)
-		 (goto-char (match-end 0)))))
-    (when (looking-at rfc5322-wschars)
-      (goto-char (match-end 0)))
-    (list start (point))))
 
 ;;; RFC 2231 handling
 
