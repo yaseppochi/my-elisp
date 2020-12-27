@@ -27,8 +27,8 @@
 
 ;; RFC 5234 core definitions of tokens represented as regular expressions
 (defconst rfc5234-crlf-re (concat rfc5234-cr rfc5234-lf))
-(defconst rfc5234-lwsp
-  (concat #r"\(?:" rfc5234-crlf-re #r"\|" rfc5234-wsp #r"\)*")
-  "Deprecated, see RFC.")
 (defconst rfc5234-wsp-re (concat "[" rfc5234-wsp "]")
+(defconst rfc5234-lwsp
+  (concat #r"\(?:\(?:" rfc5234-crlf-re #r"\)?" rfc5234-wsp-re #r"\)*")
+  "Deprecated, see RFC.")
 
