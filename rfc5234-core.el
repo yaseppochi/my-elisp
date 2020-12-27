@@ -23,11 +23,11 @@
 (defconst rfc5234-octet "\x00-\xFF")
 (defconst rfc5234-sp " ")
 (defconst rfc5234-vchar "!-~")
-(defconst rfc5234-wsp (concat rfc5234-sp rfc5234-ht))
+(defconst rfc5234-wsp (concat rfc5234-sp rfc5234-htab))
 
 ;; RFC 5234 core definitions of tokens represented as regular expressions
 (defconst rfc5234-crlf-re (concat rfc5234-cr rfc5234-lf))
-(defconst rfc5234-wsp-re (concat "[" rfc5234-wsp "]")
+(defconst rfc5234-wsp-re (concat "[" rfc5234-wsp "]"))
 (defconst rfc5234-lwsp
   (concat #r"\(?:\(?:" rfc5234-crlf-re #r"\)?" rfc5234-wsp-re #r"\)*")
   "Deprecated, see RFC.")
