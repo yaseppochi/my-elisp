@@ -32,6 +32,8 @@
 
 (defvar sjt/debug-save-attachments nil)
 
+;;; Various stuff
+
 (defun sjt/vm-author-split-address-of (message)
   (labels ((get-mailbox (access message)
 	     (vm-su-do-principal message)
@@ -99,6 +101,138 @@ Mailman author_is_list is handled."
 	  (setq sol (point))))
       )))
 
+;;; Handle students
+
+;; #### Need similar functions for faculty, candidates, and mailing lists.
+;; If all return nil, default to current month.
+
+(defun sjt/construct-directory-for-student ()
+  "Check if author or recipient is known student and return directory or nil.
+
+Also returns nil if not in an appropriate vm-mode."
+  (let* ((m (vm-current-message))
+	 (student (cond ((assoc (vm-su-from m) sjt/students-all))
+			((assoc (vm-su-to m) sjt/students-all))
+			(t nil))))
+    (when student
+      (expand-file-name (concat "~/edu/students/" (nth 1 student))))))
+
+(defun add-sk (x)
+  (concat x (cond ((string-match-p "@.*\\." x) "")
+		  ((string-match-p "@" x) ".tsukuba.ac.jp")
+		  (t "@sk.tsukuba.ac.jp"))))
+
+(defun sjt/student-id-to-email-list (sid name)
+  "Translate a student ID number to a list of three addresses at domains
+sk.tsukuba.ac.jp, s.tsukuba.ac.jp, and u.tsukuba.ac.jp."
+  (let ((last7 (substring sid 2)))
+    `((,(concat "s" last7 "@s.tsukuba.ac.jp") ,name)
+      (,(concat "s" last7 "@sk.tsukuba.ac.jp") ,name)
+      (,(concat "s" last7 "@u.tsukuba.ac.jp") ,name))))
+
+;; Original version
+; (defun sjt/vm-save-all-attachments (&optional count
+; 				    directory
+; 				    no-delete-after-saving)
+;   "Like `vm-save-all-attachments' but treats default DIR specially.
+;
+; Specifically it matches author and recipient against `sjt/students-all'."
+;   (interactive
+;    (list current-prefix-arg
+; 	 (let ((default-dir (or (sjt/construct-directory-for-student)
+; 				vm-mime-all-attachments-directory
+; 				vm-mime-attachment-save-directory
+; 				default-directory)))
+; 	   (vm-read-file-name "Attachment directory: "
+; 			      default-dir
+; 			      default-dir
+; 			      nil nil
+; 			      vm-mime-save-all-attachments-history))))
+;   (vm-save-all-attachments count directory no-delete-after-saving))
+
+;; Now with git protection!
+(defun sjt/vm-save-all-attachments (&optional count
+				    directory
+				    no-delete-after-saving)
+  "Like `vm-save-all-attachments' but treats default DIR specially.
+Also commit to a git repo, either in DIRECTORY or DIRECTORY's parent.
+#### for testing COUNT is treated as a flag for DRYRUN.
+
+Specifically it matches author and recipient against `sjt/students-all'."
+
+  (interactive
+   (list current-prefix-arg
+	 (let ((default-dir (or (sjt/construct-directory-for-student)
+				vm-mime-all-attachments-directory
+				vm-mime-attachment-save-directory
+				default-directory)))
+	   (vm-read-file-name "Attachment directory: "
+			      default-dir
+			      default-dir
+			      nil nil
+			      vm-mime-save-all-attachments-history))
+	 nil))
+
+  (let* ((gitdir1 (expand-file-name ".git/" directory))
+	 (gitdir2 (expand-file-name "../.git/" directory))
+	 (gitdir (cond ((file-directory-p gitdir1) gitdir1)
+		       ((file-directory-p gitdir2) gitdir2)
+		       (t gitdir1)))
+	 (DRYRUN (if count " [DRY RUN]" ""))
+	 (msg1 (format "Arguments: %s %s %s" directory count DRYRUN))
+	 (msg2 (format "\n%s exists: %s"
+		       directory
+		       (if (file-exists-p directory) "yes" "no")))
+	 (msg3 (if (file-exists-p directory)
+		   (format "\n%s exists: %s"
+			   gitdir
+			   (if (file-exists-p gitdir) "yes" "no"))
+		 ""))
+	 (createdir (unless (file-exists-p directory)
+		      (y-or-n-p (format "Create %s? " directory))))
+	 (msg4 (if createdir
+		   (format "\nCreating %s.%s" directory DRYRUN)
+		 ""))
+	 (msg5 (if (file-exists-p gitdir)
+		   (format "\nUsing existing git repo.%s%s%s%s"
+			   "\n  Adding all files."
+			   DRYRUN
+			   "\n  Committing."
+			   DRYRUN)
+		 (format "\nInitializing git.%s" DRYRUN)))
+	 (msg6 (format "\nSaving all attachments.%s" DRYRUN))
+	 (msg7 (format "\n  Adding all files.%s\n  Committing.%s"
+		       DRYRUN DRYRUN)))
+    (if (> (length DRYRUN) 0)
+	(with-displaying-help-buffer
+	  (lambda ()
+	    (princ (concat msg1 msg2 msg3 msg4 msg5 msg6 msg7 "\n"))))
+      (message "%s" msg1)			; Display attachment directory name.
+      (message "%s" msg2)			; Check existence.
+      (message "%s" msg3)			; ... and for GITDIR.
+      (unless (file-exists-p directory)
+	(message "%s" msg4)
+	(make-directory directory))
+      ;; #### Should check for directoryness and write access.
+      (message "%s" msg5)
+      (let ((default-directory directory))
+	(if (not (file-exists-p gitdir))
+	    (shell-command "git init")
+	  (shell-command "git add -f -A")
+	  (shell-command "git commit -m 'Commit for save-all-attachments.'")))
+      (message "%s" msg6)
+      (let ((vm-mime-delete-after-saving t))
+	;; #### Change nil to count when testing is done.
+	(vm-save-all-attachments nil directory no-delete-after-saving))
+      (message "%s" msg7)
+      (let ((default-directory directory))
+	(shell-command "git add -f -A")
+	(shell-command "git commit -m 'Commit for save-all-attachments.'"))
+      (message "Done!")
+      )))
+
+;;; handle candidates
+
 (defvar sjt/academic-year "2018")
 (defun sjt/attachment-root () (file-name-as-directory "~/VM/CANDIDATES"))
 
@@ -156,55 +290,4 @@ Mailman author_is_list is handled."
   (interactive (nconc (sjt/read-attachment-directory)
 		      (list current-prefix-arg)))
   
-  (let* ((gitdir (expand-file-name ".git" attachment-directory))
-	 (DRYRUN (if dryrun " [DRY RUN]" ""))
-	 (msg1 (format "Arguments: %s %s %s" attachment-directory dryrun DRYRUN))
-	 (msg2 (format "\n%s exists: %s"
-		       attachment-directory
-		       (if (file-exists-p attachment-directory) "yes" "no")))
-	 (msg3 (if (file-exists-p attachment-directory)
-		   (format "\n%s exists: %s"
-			   gitdir
-			   (if (file-exists-p gitdir) "yes" "no"))
-		 ""))
-	 (createdir (unless (file-exists-p attachment-directory)
-		      (y-or-n-p (format "Create %s? " attachment-directory))))
-	 (msg4 (if createdir
-		   (format "\nCreating %s.%s" attachment-directory DRYRUN)
-		 ""))
-	 (msg5 (if (file-exists-p gitdir)
-		   (format "\nUsing existing git repo.%s%s%s%s"
-			   "\n  Adding all files."
-			   DRYRUN
-			   "\n  Committing."
-			   DRYRUN)
-		 (format "\nInitializing git.%s" DRYRUN)))
-	 (msg6 (format "\nSaving all attachments.%s" DRYRUN))
-	 (msg7 (format "\n  Adding all files.%s\n  Committing.%s"
-		       DRYRUN DRYRUN)))
-    (if (> (length DRYRUN) 0)
-	(with-displaying-help-buffer
-	  (lambda ()
-	    (princ (concat msg1 msg2 msg3 msg4 msg5 msg6 msg7 "\n"))))
-      (message msg1)			; Display attachment directory name.
-      (message msg2)			; Check existence.
-      (message msg3)			; ... and for GITDIR.
-      (unless (file-exists-p attachment-directory)
-	(message msg4)
-	(make-directory attachment-directory))
-      ;; #### Should check for directoryness and write access.
-      (message msg5)
-      (let ((default-directory attachment-directory))
-	(if (not (file-exists-p gitdir))
-	    (shell-command "git init")
-	  (shell-command "git add -f -A")
-	  (shell-command "git commit -m 'Commit for save-all-attachments.'")))
-      (message msg6)
-      (let ((vm-mime-delete-after-saving t))
-	(vm-save-all-attachments nil attachment-directory))
-      (message msg7)
-      (let ((default-directory attachment-directory))
-	(shell-command "git add -f -A")
-	(shell-command "git commit -m 'Commit for save-all-attachments.'"))
-      (message "Done!")
-      )))
+  (sjt/vm-save-all-attachments dryrun attachment-directory))
