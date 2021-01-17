@@ -151,6 +151,17 @@ sk.tsukuba.ac.jp, s.tsukuba.ac.jp, and u.tsukuba.ac.jp."
 ;   (vm-save-all-attachments count directory no-delete-after-saving))
 
 ;; Now with git protection!
+;; #### Issues:
+;; 1.  The current version doesn't pick up new files.
+;; 2.  This is hard to do based on the current attachment because file listing
+;;     is embedded in #'vm-mime-operate-on-attachments.
+;; 3.  But git add -A does all files (including in subdirs), which is generally
+;;     undesirable.
+;; I think the resolution is to bite the bullet on "all files," and delete the
+;; ones we don't want around (eg, in old FILES/yyyy/mm directories), which is
+;; approximately the same amount of space in the worst case (OA files that are
+;; zip archives internally), and in cases where the same file gets sent
+;; repeatedly is a win.
 (defun sjt/vm-save-all-attachments (&optional count
 				    directory
 				    no-delete-after-saving)
@@ -162,73 +173,101 @@ Specifically it matches author and recipient against `sjt/students-all'."
 
   (interactive
    (list current-prefix-arg
-	 (let ((default-dir (or (sjt/construct-directory-for-student)
-				vm-mime-all-attachments-directory
-				vm-mime-attachment-save-directory
-				default-directory)))
-	   (vm-read-file-name "Attachment directory: "
-			      default-dir
-			      default-dir
-			      nil nil
-			      vm-mime-save-all-attachments-history))
+	 (expand-file-name
+	  (let ((default-dir (or (sjt/construct-directory-for-student)
+				 vm-mime-all-attachments-directory
+				 vm-mime-attachment-save-directory
+				 default-directory)))
+	    (vm-read-file-name "Attachment directory: "
+			       default-dir
+			       default-dir
+			       nil nil
+			       vm-mime-save-all-attachments-history)))
 	 nil))
 
-  (let* ((gitdir1 (expand-file-name ".git/" directory))
+  (let ((vm-buf (current-buffer))
+	(logbuf (get-buffer-create " *Save all attachments log*")))
+    (with-current-buffer logbuf
+      (erase-buffer)
+      (sjt/vm-save-all-attachments-internal
+       count directory no-delete-after-saving vm-buf logbuf))
+    (pop-to-buffer logbuf)))
+
+(defun sjt/vm-save-all-attachments-internal
+  (&optional count directory no-delete-after-saving vm-buf logbuf)
+  "See `sjt/vm-save-all-attachments'."
+
+  (let* ((exists (file-exists-p directory))
+	 (gitdir1 (expand-file-name ".git/" directory))
 	 (gitdir2 (expand-file-name "../.git/" directory))
-	 (gitdir (cond ((file-directory-p gitdir1) gitdir1)
-		       ((file-directory-p gitdir2) gitdir2)
+	 (gitdir (cond ((and exists (file-directory-p gitdir1)) gitdir1)
+		       ((and exists (file-directory-p gitdir2)) gitdir2)
 		       (t gitdir1)))
 	 (DRYRUN (if count " [DRY RUN]" ""))
 	 (msg1 (format "Arguments: %s %s %s" directory count DRYRUN))
 	 (msg2 (format "\n%s exists: %s"
 		       directory
-		       (if (file-exists-p directory) "yes" "no")))
-	 (msg3 (if (file-exists-p directory)
+		       (if exists "yes" "no")))
+	 (msg3 (if exists
 		   (format "\n%s exists: %s"
 			   gitdir
 			   (if (file-exists-p gitdir) "yes" "no"))
 		 ""))
-	 (createdir (unless (file-exists-p directory)
+	 (createdir (unless exists
 		      (y-or-n-p (format "Create %s? " directory))))
 	 (msg4 (if createdir
 		   (format "\nCreating %s.%s" directory DRYRUN)
 		 ""))
-	 (msg5 (if (file-exists-p gitdir)
-		   (format "\nUsing existing git repo.%s%s%s%s"
-			   "\n  Adding all files."
-			   DRYRUN
-			   "\n  Committing."
-			   DRYRUN)
-		 (format "\nInitializing git.%s" DRYRUN)))
+	 (msg5 (concat (if (file-exists-p gitdir)
+			   (format "\nUsing existing git repo.")
+			 (format "\nInitializing git."))
+		       (format "%s%s%s%s%s"
+			       DRYRUN
+			       "\n  Adding all preexisting files."
+			       DRYRUN
+			       "\n  Committing."
+			       DRYRUN)))
 	 (msg6 (format "\nSaving all attachments.%s" DRYRUN))
 	 (msg7 (format "\n  Adding all files.%s\n  Committing.%s"
 		       DRYRUN DRYRUN)))
     (if (> (length DRYRUN) 0)
-	(with-displaying-help-buffer
-	  (lambda ()
-	    (princ (concat msg1 msg2 msg3 msg4 msg5 msg6 msg7 "\n"))))
-      (message "%s" msg1)			; Display attachment directory name.
-      (message "%s" msg2)			; Check existence.
-      (message "%s" msg3)			; ... and for GITDIR.
-      (unless (file-exists-p directory)
-	(message "%s" msg4)
+	(insert (concat msg1 msg2 msg3 msg4 msg5 msg6 msg7 "\n"))
+      (insert msg1)			; Display attachment directory name.
+      (insert msg2)			; Check existence.
+      (insert msg3)			; ... and for GITDIR.
+      (when createdir
+	(insert msg4)
 	(make-directory directory))
       ;; #### Should check for directoryness and write access.
-      (message "%s" msg5)
-      (let ((default-directory directory))
-	(if (not (file-exists-p gitdir))
-	    (shell-command "git init")
-	  (shell-command "git add -f -A")
-	  (shell-command "git commit -m 'Commit for save-all-attachments.'")))
-      (message "%s" msg6)
-      (let ((vm-mime-delete-after-saving t))
-	;; #### Change nil to count when testing is done.
-	(vm-save-all-attachments nil directory no-delete-after-saving))
-      (message "%s" msg7)
-      (let ((default-directory directory))
-	(shell-command "git add -f -A")
-	(shell-command "git commit -m 'Commit for save-all-attachments.'"))
-      (message "Done!")
+      (insert msg5 "\n")
+      (let ((default-directory directory)
+	    commit)
+	(when (not (file-exists-p gitdir))
+	  (shell-command "git init" t)
+	  (goto-char (point-max)))
+	(shell-command "git add -f -A" t)
+	(goto-char (point-max))
+	(shell-command "git status" t)
+	(goto-char (point-max))
+	(save-excursion
+	  (pop-to-buffer logbuf)
+	  (setq commit (yes-or-no-p "Commit now? ")))
+	(when commit
+	  (shell-command
+	   "git commit -a -m 'Pre-commit for save-all-attachments.'" t)
+	  (goto-char (point-max))
+	  (insert msg6)
+	  (let ((vm-mime-delete-after-saving t))
+	    ;; #### Change nil to count when testing is done.
+	    (with-current-buffer vm-buf
+	      (vm-save-all-attachments nil directory no-delete-after-saving)))
+	  (insert msg7)
+	  (shell-command "git add -f -A" t)
+	  (goto-char (point-max))
+	  (shell-command
+	   "git commit -a -m 'Post-commit for save-all-attachments.'" t)
+	  (goto-char (point-max))))
+      (insert "\nDone!")
       )))
 
 ;;; handle candidates
