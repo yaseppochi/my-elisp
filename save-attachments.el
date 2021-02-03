@@ -162,10 +162,12 @@ sk.tsukuba.ac.jp, s.tsukuba.ac.jp, and u.tsukuba.ac.jp."
 ;; approximately the same amount of space in the worst case (OA files that are
 ;; zip archives internally), and in cases where the same file gets sent
 ;; repeatedly is a win.
+;; #### To do: get rid of DRYRUN stuff, revert count to count.
+;; Merge ...-internal back into main function?
 (defun sjt/vm-save-all-attachments (&optional count
 				    directory
 				    no-delete-after-saving)
-  "Like `vm-save-all-attachments' but treats default DIR specially.
+  "Like `vm-save-all-attachments' but treats default DIRECTORY specially.
 Also commit to a git repo, either in DIRECTORY or DIRECTORY's parent.
 #### for testing COUNT is treated as a flag for DRYRUN.
 
@@ -185,16 +187,52 @@ Specifically it matches author and recipient against `sjt/students-all'."
 			       vm-mime-save-all-attachments-history)))
 	 nil))
 
-  (let ((vm-buf (current-buffer))
+  (let ((vmbuf (current-buffer))
 	(logbuf (get-buffer-create " *Save all attachments log*")))
     (with-current-buffer logbuf
       (erase-buffer)
       (sjt/vm-save-all-attachments-internal
-       count directory no-delete-after-saving vm-buf logbuf))
+       count directory no-delete-after-saving vmbuf logbuf))
     (pop-to-buffer logbuf)))
 
+;; DIRECTORY must be a string.  COUNT is ignored.
+(defun sjt/git-add-attachments (count directory vmbuf)
+  (let ((successes 0)
+	(failures 0)
+	(default-directory directory)
+	added-attachments)
+    (with-current-buffer vmbuf
+      (vm-mime-operate-on-attachments
+       count
+       :name "git adding"
+       :included vm-mime-saveable-types
+       :excluded vm-mime-saveable-type-exceptions
+       :action
+       (lambda (msg layout type file)
+	 (if (null file)
+	     (setq failures (+ 1 failures))
+	   (push file added-attachments)
+	   (let ((default-directory directory))
+	     (if (not (file-exists-p file))
+		 (progn 
+		   (message "can't find '%s' in '%s'" file default-directory)
+		   (sit-for 1))
+	       (when (y-or-n-p (format "git add -f '%s' (in %s)? "
+				       file default-directory))
+		 (shell-command (format "git add -f '%s'" file))))
+	     ;; #### Uncomment when y-or-n-p is removed.
+	     ;; (vm-inform 5 "Adding %s" (if file (format " (%s)" file) ""))
+	     (setq successes (+ 1 successes)))))))
+    (goto-char (point-max))
+    (insert (format "\n%s\n"
+		    (cons successes (cons failures added-attachments))))
+    (let ((default-directory directory))
+      (shell-command "git status" t))
+    (goto-char (point-max))
+    added-attachments))
+
 (defun sjt/vm-save-all-attachments-internal
-  (&optional count directory no-delete-after-saving vm-buf logbuf)
+  (&optional count directory no-delete-after-saving vmbuf logbuf)
   "See `sjt/vm-save-all-attachments'."
 
   (let* ((exists (file-exists-p directory))
@@ -241,33 +279,45 @@ Specifically it matches author and recipient against `sjt/students-all'."
       ;; #### Should check for directoryness and write access.
       (insert msg5 "\n")
       (let ((default-directory directory)
+	    (adding-files (sjt/git-add-attachments nil directory vmbuf))
 	    commit)
 	(when (not (file-exists-p gitdir))
 	  (shell-command "git init" t)
 	  (goto-char (point-max)))
-	(shell-command "git add -f -A" t)
-	(goto-char (point-max))
-	(shell-command "git status" t)
-	(goto-char (point-max))
+	;; (shell-command "git add -f -A" t)
+	(insert "\nCheck for modified or untracked in added-attachments.\n")
 	(save-excursion
 	  (pop-to-buffer logbuf)
-	  (setq commit (yes-or-no-p "Commit now? ")))
+	  (setq commit (y-or-n-p "Commit now? ")))
 	(when commit
-	  (shell-command
-	   "git commit -a -m 'Pre-commit for save-all-attachments.'" t)
+	  (let ((default-directory directory)
+		(cmd "git commit -m 'Pre-commit for save-all-attachments.'"))
+	    (insert cmd "\n")
+	    (shell-command cmd t))
 	  (goto-char (point-max))
 	  (insert msg6)
 	  (let ((vm-mime-delete-after-saving t))
 	    ;; #### Change nil to count when testing is done.
-	    (with-current-buffer vm-buf
+	    (with-current-buffer vmbuf
 	      (vm-save-all-attachments nil directory no-delete-after-saving)))
 	  (insert msg7)
-	  (shell-command "git add -f -A" t)
 	  (goto-char (point-max))
-	  (shell-command
-	   "git commit -a -m 'Post-commit for save-all-attachments.'" t)
-	  (goto-char (point-max))))
-      (insert "\nDone!")
+	  (if (null adding-files)
+	      (insert "\nNo files to commit.")
+	    (let ((command (loop
+			     for attachment in adding-files
+			     concat (format " '%s'" attachment) into cmd
+			     finally return (format "git add -f%s" cmd))))
+	      (insert "\n" command "\n")
+	      (shell-command command t))
+	    ;; (shell-command "git add -f -A" t)
+	    (insert "\n")
+	    (let ((default-directory directory)
+		  (cmd "git commit -m 'Post-commit for save-all-attachments.'"))
+	      (insert cmd " (in " default-directory ")\n")
+	      (shell-command cmd t))
+	    (goto-char (point-max)))))
+      (insert "\nDone!\n")
       )))
 
 ;;; handle candidates
