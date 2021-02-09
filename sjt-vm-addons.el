@@ -982,10 +982,11 @@ shorter pieces, rebuild it from them."
 	    param (car param-list))
       (if (not (third param))		; As above.
 	  ;; #### An abomination, probably should restrict to Content-Type.
-	  (mapconcat (lambda (x)
-		       (vm-decode-mime-encoded-words-in-string (second x)))
-		     param-list
-		     "")
+	  (when param
+	    (mapconcat (lambda (x)
+			 (vm-decode-mime-encoded-words-in-string (second x)))
+		       param-list
+		       ""))
 	(setq param (vm-decode-encoded-segment (second param) t)
 	      charset (second param)
 	      lang (third param)

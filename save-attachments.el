@@ -209,7 +209,7 @@ Specifically it matches author and recipient against `sjt/students-all'."
        :excluded vm-mime-saveable-type-exceptions
        :action
        (lambda (msg layout type file)
-	 (if (null file)
+	 (if (or (null file) (string= file ""))
 	     (setq failures (+ 1 failures))
 	   (push file added-attachments)
 	   (let ((default-directory directory))
@@ -278,12 +278,13 @@ Specifically it matches author and recipient against `sjt/students-all'."
 	(make-directory directory))
       ;; #### Should check for directoryness and write access.
       (insert msg5 "\n")
+      (when (not (file-exists-p gitdir))
+	(let ((default-directory directory))
+	  (shell-command "git init" t))
+	(goto-char (point-max)))
       (let ((default-directory directory)
 	    (adding-files (sjt/git-add-attachments nil directory vmbuf))
 	    commit)
-	(when (not (file-exists-p gitdir))
-	  (shell-command "git init" t)
-	  (goto-char (point-max)))
 	;; (shell-command "git add -f -A" t)
 	(insert "\nCheck for modified or untracked in added-attachments.\n")
 	(save-excursion
