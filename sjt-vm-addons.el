@@ -945,7 +945,12 @@ shorter pieces, rebuild it from them."
 ;; (2) Handle charset processing (#### ignore language).
 ;; #### Doesn't work with rawstrings because "\\n" doesn't match newline?
 (defconst param-re-fmt
-  "\\`%s\\(?:\\*\\([0-9]+\\)\\)?\\(\\*\\)?=\\(\\(?:\n\\|.\\)*\\)\\'")
+  (concat "\\`%s"			; parameter name goes here
+	  "\\(?:\\*\\([0-9]+\\)\\)?"	; if 1 is digits, multiple segments
+	  "\\(\\*\\)?"			; if 2 is *, parameter encoded
+	  "=\\(\\(?:\n\\|.\\)*\\)\\'"	; 3 is maybe encoded value
+					; #### folding not allowed by RFC
+	  ))
 (defun vm-mime-get-xxx-parameter-version-2 (name param-list)
   "Return the parameter NAME from PARAM-LIST.
 
@@ -953,6 +958,8 @@ If parameter value continuations was used, i.e. the parameter was split into
 shorter pieces, rebuild it from them."
   (let ((param-re (format param-re-fmt (regexp-quote name)))
 	param charset lang)
+    ;; convert param-list from "name=value" to (ORDER ENCODED-TEXT FLAG)
+    ;; and remove non-matching parameters
     (setq param-list (delete-if #'null
 				(mapcar
 				 (lambda (s)
@@ -962,18 +969,19 @@ shorter pieces, rebuild it from them."
 						 (match-string 1 s)))
 					   (match-string 3 s)
 					   (match-string 2 s))))
-				 ;; #### is copy-sequence needed?
+				 ;; #### use remove-if to avoid this?
 				 (copy-sequence param-list))))
-    ;; each param is (ORDER ENCODED-TEXT FLAG)
-    (if (> 2 (length param-list))
+    (if (= 1 (length param-list))
 	(and (setq param (car param-list))
-	     (if (not (third param))
-		 (vm-decode-mime-encoded-words-in-string (second param))
-	       (first (vm-decode-encoded-segment (second param) t))))
+	     ;; If FLAG is true, RFC 2231-encoded.
+	     (if (third param)
+		 (first (vm-decode-encoded-segment (second param) t))
+	       ;; Otherwise, handle possible MIME-encoding.
+	       (vm-decode-mime-encoded-words-in-string (second param))))
       (setq param-list (sort* param-list #'< :key #'car)
 	    param (car param-list))
-      (if (not (third param))
-	  ;; #### an abomination, probably should be restricted to Content-Type
+      (if (not (third param))		; As above.
+	  ;; #### An abomination, probably should restrict to Content-Type.
 	  (mapconcat (lambda (x)
 		       (vm-decode-mime-encoded-words-in-string (second x)))
 		     param-list
@@ -986,11 +994,16 @@ shorter pieces, rebuild it from them."
 	(apply #'concat
 	       (cons param
 		     (mapcar (lambda (x)
+			       ;; Funky RFC 2231 stuff: when first segment
+			       ;; is encoded, trailing segments may or may
+			       ;; not be encoded.  Need to check each.
 			       (if (third x)
 				   (car (vm-decode-encoded-segment
 					 (second x) charset lang))
 				 (second x)))
 			     param-list)))))))
+
+(fset 'vm-mime-get-xxx-parameter 'vm-mime-get-xxx-parameter-version-2)
 
 (defun vm-decode-encoded-segment (segment &optional charset lang)
   "Return (TEXT CHARSET LANG) of a parameter SEGMENT decoded per RFC 2231.
@@ -1171,8 +1184,6 @@ ACTION will get called with four arguments: MSG LAYOUT TYPE FILENAME."
 			type filename disposition)))
 		(setq parts (cdr parts))))))
 	(setq mlist (cdr mlist))))))
-
-(fset 'vm-mime-get-xxx-parameter 'vm-mime-get-xxx-parameter-version-2)
 
 ;;; Tests
 
