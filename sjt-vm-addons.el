@@ -1246,3 +1246,23 @@ ACTION will get called with four arguments: MSG LAYOUT TYPE FILENAME."
 )
   "These come from mail from 伊藤悠斗.")
 
+(defun fujikawa-test-get-xxx-parameter ()
+  (save-excursion
+    (set-buffer "INBOX Summary")
+    (let* ((msg (vm-current-message))
+	   (layout (vm-mm-layout msg))
+	   (parts (vm-mm-layout-parts layout))
+	   (ma-part (second parts)) 	; multipart/alternative for Apple Mail
+					; from Fujikawa
+	   )
+      (loop
+	for part in (vm-mm-layout-parts ma-part)
+	collect
+	;(vm-mm-layout-type part)
+	(vm-mime-get-xxx-parameter "filename"
+	  (vm-mm-layout-disposition part)
+	  )
+        ;(vmn-mm-layout-parts part)
+	)
+      )))
+
