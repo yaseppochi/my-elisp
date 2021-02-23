@@ -162,7 +162,6 @@ sk.tsukuba.ac.jp, s.tsukuba.ac.jp, and u.tsukuba.ac.jp."
 ;; approximately the same amount of space in the worst case (OA files that are
 ;; zip archives internally), and in cases where the same file gets sent
 ;; repeatedly is a win.
-;; #### To do: get rid of DRYRUN stuff, revert count to count.
 ;; Merge ...-internal back into main function?
 ;; DIRECTORY must be a string.  COUNT is ignored.
 (defun sjt/git-add-attachments (count directory vmbuf)
@@ -205,7 +204,6 @@ sk.tsukuba.ac.jp, s.tsukuba.ac.jp, and u.tsukuba.ac.jp."
 				    no-delete-after-saving)
   "Like `vm-save-all-attachments' but treats default DIRECTORY specially.
 Also commit to a git repo, either in DIRECTORY or DIRECTORY's parent.
-#### for testing COUNT is treated as a flag for DRYRUN.
 
 Specifically it matches author and recipient against `sjt/students-all'."
 
@@ -241,8 +239,7 @@ Specifically it matches author and recipient against `sjt/students-all'."
 	 (gitdir (cond ((and exists (file-directory-p gitdir1)) gitdir1)
 		       ((and exists (file-directory-p gitdir2)) gitdir2)
 		       (t gitdir1)))
-	 (DRYRUN (if count " [DRY RUN]" ""))
-	 (msg1 (format "Arguments: %s %s %s" directory count DRYRUN))
+	 (msg1 (format "Arguments: %s %s" directory count))
 	 (msg2 (format "\n%s exists: %s"
 		       directory
 		       (if exists "yes" "no")))
@@ -254,72 +251,66 @@ Specifically it matches author and recipient against `sjt/students-all'."
 	 (createdir (unless exists
 		      (y-or-n-p (format "Create %s? " directory))))
 	 (msg4 (if createdir
-		   (format "\nCreating %s.%s" directory DRYRUN)
+		   (format "\nCreating %s." directory)
 		 ""))
 	 (msg5 (concat (if (file-exists-p gitdir)
 			   (format "\nUsing existing git repo.")
 			 (format "\nInitializing git."))
-		       (format "%s%s%s%s%s"
-			       DRYRUN
+		       (format "%s%s"
 			       "\n  Adding all preexisting files."
-			       DRYRUN
-			       "\n  Committing."
-			       DRYRUN)))
+			       "\n  Committing.")))
 	 (msg6 (format "\nSaving all attachments.%s" DRYRUN))
-	 (msg7 (format "\n  Adding all files.%s\n  Committing.%s"
-		       DRYRUN DRYRUN)))
-    (if (> (length DRYRUN) 0)
-	(insert (concat msg1 msg2 msg3 msg4 msg5 msg6 msg7 "\n"))
-      (insert msg1)			; Display attachment directory name.
-      (insert msg2)			; Check existence.
-      (insert msg3)			; ... and for GITDIR.
-      (when createdir
-	(insert msg4)
-	(make-directory directory))
-      ;; #### Should check for directoryness and write access.
-      (insert msg5 "\n")
-      (when (not (file-exists-p gitdir))
-	(let ((default-directory directory))
-	  (shell-command "git init" t))
-	(goto-char (point-max)))
-      (let ((default-directory directory)
-	    (adding-files (sjt/git-add-attachments nil directory vmbuf))
-	    commit)
-	;; (shell-command "git add -f -A" t)
-	(insert "\nCheck for modified or untracked in added-attachments.\n")
-	(save-excursion
-	  (pop-to-buffer logbuf)
-	  (setq commit (y-or-n-p "Commit now? ")))
-	(when commit
+	 (msg7 (format "\n  Adding all files.\n  Committing.")))
+    (insert msg1)			; Display attachment directory name.
+    (insert msg2)			; Check existence.
+    (insert msg3)			; ... and for GITDIR.
+    (when createdir
+      (insert msg4)
+      (make-directory directory))
+    ;; #### Should check for directoryness and write access.
+    (insert msg5 "\n")
+    (when (not (file-exists-p gitdir))
+      (let ((default-directory directory))
+	(shell-command "git init" t))
+      (goto-char (point-max)))
+    (let ((default-directory directory)
+	  (adding-files (sjt/git-add-attachments nil directory vmbuf))
+	  commit)
+      ;; (shell-command "git add -f -A" t)
+      (insert "\nCheck for modified or untracked in added-attachments.\n")
+      (save-excursion
+	(pop-to-buffer logbuf)
+	(setq commit (y-or-n-p "Commit now? ")))
+      (when commit
+	(let ((default-directory directory)
+	      (cmd "git commit -m 'Pre-commit for save-all-attachments.'"))
+	  (insert cmd "\n")
+	  (shell-command cmd t))
+	(goto-char (point-max))
+	(insert msg6)
+	(let ((vm-mime-delete-after-saving t))
+	  ;; #### Change nil to count when testing is done.
+	  (with-current-buffer vmbuf
+	    (vm-save-all-attachments nil directory no-delete-after-saving)))
+	(insert msg7)
+	(goto-char (point-max))
+	(if (null adding-files)
+	    (insert "\nNo files to commit.")
+	  (let ((command (loop
+			   for attachment in adding-files
+			   concat (format " '%s'" attachment) into cmd
+			   finally return (format "git add -f%s" cmd))))
+	    (insert "\n" command "\n")
+	    (shell-command command t))
+	  ;; (shell-command "git add -f -A" t)
+	  (insert "\n")
 	  (let ((default-directory directory)
-		(cmd "git commit -m 'Pre-commit for save-all-attachments.'"))
-	    (insert cmd "\n")
+		(cmd "git commit -m 'Post-commit for save-all-attachments.'"))
+	    (insert cmd " (in " default-directory ")\n")
 	    (shell-command cmd t))
-	  (goto-char (point-max))
-	  (insert msg6)
-	  (let ((vm-mime-delete-after-saving t))
-	    ;; #### Change nil to count when testing is done.
-	    (with-current-buffer vmbuf
-	      (vm-save-all-attachments nil directory no-delete-after-saving)))
-	  (insert msg7)
-	  (goto-char (point-max))
-	  (if (null adding-files)
-	      (insert "\nNo files to commit.")
-	    (let ((command (loop
-			     for attachment in adding-files
-			     concat (format " '%s'" attachment) into cmd
-			     finally return (format "git add -f%s" cmd))))
-	      (insert "\n" command "\n")
-	      (shell-command command t))
-	    ;; (shell-command "git add -f -A" t)
-	    (insert "\n")
-	    (let ((default-directory directory)
-		  (cmd "git commit -m 'Post-commit for save-all-attachments.'"))
-	      (insert cmd " (in " default-directory ")\n")
-	      (shell-command cmd t))
-	    (goto-char (point-max)))))
-      (insert "\nDone!\n")
-      )))
+	  (goto-char (point-max)))))
+    (insert "\nDone!\n")
+    ))
 
 ;;; handle candidates
 
