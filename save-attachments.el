@@ -164,37 +164,6 @@ sk.tsukuba.ac.jp, s.tsukuba.ac.jp, and u.tsukuba.ac.jp."
 ;; repeatedly is a win.
 ;; #### To do: get rid of DRYRUN stuff, revert count to count.
 ;; Merge ...-internal back into main function?
-(defun sjt/vm-save-all-attachments (&optional count
-				    directory
-				    no-delete-after-saving)
-  "Like `vm-save-all-attachments' but treats default DIRECTORY specially.
-Also commit to a git repo, either in DIRECTORY or DIRECTORY's parent.
-#### for testing COUNT is treated as a flag for DRYRUN.
-
-Specifically it matches author and recipient against `sjt/students-all'."
-
-  (interactive
-   (list current-prefix-arg
-	 (expand-file-name
-	  (let ((default-dir (or (sjt/construct-directory-for-student)
-				 vm-mime-all-attachments-directory
-				 vm-mime-attachment-save-directory
-				 default-directory)))
-	    (vm-read-file-name "Attachment directory: "
-			       default-dir
-			       default-dir
-			       nil nil
-			       vm-mime-save-all-attachments-history)))
-	 nil))
-
-  (let ((vmbuf (current-buffer))
-	(logbuf (get-buffer-create " *Save all attachments log*")))
-    (with-current-buffer logbuf
-      (erase-buffer)
-      (sjt/vm-save-all-attachments-internal
-       count directory no-delete-after-saving vmbuf logbuf))
-    (pop-to-buffer logbuf)))
-
 ;; DIRECTORY must be a string.  COUNT is ignored.
 (defun sjt/git-add-attachments (count directory vmbuf)
   (let ((successes 0)
@@ -230,6 +199,37 @@ Specifically it matches author and recipient against `sjt/students-all'."
       (shell-command "git status" t))
     (goto-char (point-max))
     added-attachments))
+
+(defun sjt/vm-save-all-attachments (&optional count
+				    directory
+				    no-delete-after-saving)
+  "Like `vm-save-all-attachments' but treats default DIRECTORY specially.
+Also commit to a git repo, either in DIRECTORY or DIRECTORY's parent.
+#### for testing COUNT is treated as a flag for DRYRUN.
+
+Specifically it matches author and recipient against `sjt/students-all'."
+
+  (interactive
+   (list current-prefix-arg
+	 (expand-file-name
+	  (let ((default-dir (or (sjt/construct-directory-for-student)
+				 vm-mime-all-attachments-directory
+				 vm-mime-attachment-save-directory
+				 default-directory)))
+	    (vm-read-file-name "Attachment directory: "
+			       default-dir
+			       default-dir
+			       nil nil
+			       vm-mime-save-all-attachments-history)))
+	 nil))
+
+  (let ((vmbuf (current-buffer))
+	(logbuf (get-buffer-create " *Save all attachments log*")))
+    (with-current-buffer logbuf
+      (erase-buffer)
+      (sjt/vm-save-all-attachments-internal
+       count directory no-delete-after-saving vmbuf logbuf))
+    (pop-to-buffer logbuf)))
 
 (defun sjt/vm-save-all-attachments-internal
   (&optional count directory no-delete-after-saving vmbuf logbuf)
