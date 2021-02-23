@@ -164,12 +164,13 @@ sk.tsukuba.ac.jp, s.tsukuba.ac.jp, and u.tsukuba.ac.jp."
 ;; repeatedly is a win.
 ;; Merge ...-internal back into main function?
 ;; DIRECTORY must be a string.  COUNT is ignored.
-(defun sjt/git-add-attachments (count directory vmbuf)
-  (let ((successes 0)
-	(failures 0)
-	(default-directory directory)
-	added-attachments)
-    (with-current-buffer vmbuf
+(defun sjt/git-add-attachments (count directory logbuf)
+  (if (null logbuf)
+      (error 'args-out-of-range "logbuf must be non-nil")
+    (let ((successes 0)
+	  (failures 0)
+	  (default-directory directory)
+	  added-attachments)
       (vm-mime-operate-on-attachments
        count
        :name "git adding"
@@ -187,21 +188,21 @@ sk.tsukuba.ac.jp, s.tsukuba.ac.jp, and u.tsukuba.ac.jp."
 		   (sit-for 1))
 	       (when (y-or-n-p (format "git add -f '%s' (in %s)? "
 				       file default-directory))
-		 (shell-command (format "git add -f '%s'" file))))
+		 (shell-command (format "git add -f '%s'" file) logbuf)))
 	     ;; #### Uncomment when y-or-n-p is removed.
 	     ;; (vm-inform 5 "Adding %s" (if file (format " (%s)" file) ""))
-	     (setq successes (+ 1 successes)))))))
-    (goto-char (point-max))
-    (insert (format "\n%s\n"
-		    (cons successes (cons failures added-attachments))))
-    (let ((default-directory directory))
-      (shell-command "git status" t))
-    (goto-char (point-max))
-    added-attachments))
+	     (setq successes (+ 1 successes))))))
+      (goto-char (point-max))
+      (insert-string (format "\n%s\n"
+			     (cons successes (cons failures added-attachments)))
+		     logbuf)
+      (shell-command "git status" logbuf)
+      (goto-char (point-max))
+      added-attachments)))
 
-(defun sjt/vm-save-all-attachments (&optional count
-				    directory
-				    no-delete-after-saving)
+(defun sjt/vm-save-all-attachments
+  (&optional count directory no-delete-after-saving)
+
   "Like `vm-save-all-attachments' but treats default DIRECTORY specially.
 Also commit to a git repo, either in DIRECTORY or DIRECTORY's parent.
 
@@ -221,96 +222,59 @@ Specifically it matches author and recipient against `sjt/students-all'."
 			       vm-mime-save-all-attachments-history)))
 	 nil))
 
-  (let ((vmbuf (current-buffer))
-	(logbuf (get-buffer-create " *Save all attachments log*")))
-    (with-current-buffer logbuf
-      (erase-buffer)
-      (sjt/vm-save-all-attachments-internal
-       count directory no-delete-after-saving vmbuf logbuf))
-    (pop-to-buffer logbuf)))
-
-(defun sjt/vm-save-all-attachments-internal
-  (&optional count directory no-delete-after-saving vmbuf logbuf)
-  "See `sjt/vm-save-all-attachments'."
-
-  (let* ((exists (file-exists-p directory))
+  (let* ((default-directory directory)
+	 (logbuf (get-buffer-create " *Save all attachments log*"))
+	 (exists (file-exists-p directory))
 	 (gitdir1 (expand-file-name ".git/" directory))
 	 (gitdir2 (expand-file-name "../.git/" directory))
 	 (gitdir (cond ((and exists (file-directory-p gitdir1)) gitdir1)
 		       ((and exists (file-directory-p gitdir2)) gitdir2)
 		       (t gitdir1)))
-	 (msg1 (format "Arguments: %s %s" directory count))
-	 (msg2 (format "\n%s exists: %s"
-		       directory
-		       (if exists "yes" "no")))
-	 (msg3 (if exists
-		   (format "\n%s exists: %s"
-			   gitdir
-			   (if (file-exists-p gitdir) "yes" "no"))
-		 ""))
-	 (createdir (unless exists
-		      (y-or-n-p (format "Create %s? " directory))))
-	 (msg4 (if createdir
-		   (format "\nCreating %s." directory)
-		 ""))
-	 (msg5 (concat (if (file-exists-p gitdir)
-			   (format "\nUsing existing git repo.")
-			 (format "\nInitializing git."))
-		       (format "%s%s"
-			       "\n  Adding all preexisting files."
-			       "\n  Committing.")))
-	 (msg6 (format "\nSaving all attachments.%s" DRYRUN))
-	 (msg7 (format "\n  Adding all files.\n  Committing.")))
-    (insert msg1)			; Display attachment directory name.
-    (insert msg2)			; Check existence.
-    (insert msg3)			; ... and for GITDIR.
-    (when createdir
-      (insert msg4)
-      (make-directory directory))
-    ;; #### Should check for directoryness and write access.
-    (insert msg5 "\n")
-    (when (not (file-exists-p gitdir))
-      (let ((default-directory directory))
-	(shell-command "git init" t))
-      (goto-char (point-max)))
-    (let ((default-directory directory)
-	  (adding-files (sjt/git-add-attachments nil directory vmbuf))
-	  commit)
-      ;; (shell-command "git add -f -A" t)
-      (insert "\nCheck for modified or untracked in added-attachments.\n")
-      (save-excursion
-	(pop-to-buffer logbuf)
-	(setq commit (y-or-n-p "Commit now? ")))
-      (when commit
-	(let ((default-directory directory)
-	      (cmd "git commit -m 'Pre-commit for save-all-attachments.'"))
-	  (insert cmd "\n")
-	  (shell-command cmd t))
-	(goto-char (point-max))
-	(insert msg6)
-	(let ((vm-mime-delete-after-saving t))
-	  ;; #### Change nil to count when testing is done.
-	  (with-current-buffer vmbuf
-	    (vm-save-all-attachments nil directory no-delete-after-saving)))
-	(insert msg7)
-	(goto-char (point-max))
-	(if (null adding-files)
-	    (insert "\nNo files to commit.")
-	  (let ((command (loop
-			   for attachment in adding-files
-			   concat (format " '%s'" attachment) into cmd
-			   finally return (format "git add -f%s" cmd))))
-	    (insert "\n" command "\n")
-	    (shell-command command t))
-	  ;; (shell-command "git add -f -A" t)
-	  (insert "\n")
-	  (let ((default-directory directory)
-		(cmd "git commit -m 'Post-commit for save-all-attachments.'"))
-	    (insert cmd " (in " default-directory ")\n")
-	    (shell-command cmd t))
-	  (goto-char (point-max)))))
-    (insert "\nDone!\n")
-    ))
+	 (cmd "git commit -m 'Pre-commit for save-all-attachments.'")
+	 adding-files)
+    (if (null adding-files)
+	  (message "%s" "No files to commit.\n")
+      (erase-buffer logbuf)
+      (setq adding-files (sjt/git-add-attachments nil directory logbuf))
+      (labels ((dolog (s)
+		 (insert-string s logbuf))
+	       (docmd (cmd)
+		 (dolog (format "%s\n  (in %s)\n" cmd default-directory))
+		 (shell-command cmd logbuf)
+		 (goto-char (point-max) logbuf)))
+	(dolog (format "Arguments: %s %s %s\n"
+		       count no-delete-after-saving directory))
+	(dolog (format "%s exists: %s\n" directory (if exists "yes" "no")))
+	(when exists
+	  (dolog (format "%s exists: %s\n"
+		  gitdir
+		  (if (file-exists-p gitdir) "yes" "no"))))
+	(when (and (not exists)
+		   (y-or-n-p (format "Create %s? " directory)))
+	  (dolog (format "Creating %s.\n" directory))
+	  (make-directory directory))
+	(dolog (if (file-exists-p gitdir)
+		   (format "Using existing git repo.\n")
+		 (format "Initializing git.\n")))
+	(when (and (not (file-exists-p gitdir))
+		   (y-or-n-p (format "git init %s? " gitdir)))
+	  (docmd "git init"))
+	(dolog "  Adding all preexisting files.\n  Committing.\n")
+	(dolog "Check for modified or untracked in added-attachments.\n")
+	(when (y-or-n-p "Commit now? ")
+	  (docmd cmd)
+	  (dolog "Saving all attachments.\n")
+	  (let ((vm-mime-delete-after-saving t))
+	    ;; #### Does this need to log in?
+	    (vm-save-all-attachments count directory no-delete-after-saving))
+	  (dolog (format "  Adding all files.\n  Committing.\n"))
+	  (docmd (loop
+		  for attachment in adding-files
+		  concat (format " '%s'" attachment) into cmd
+		  finally return (format "git add -f%s" cmd)))
+	  (docmd "git commit -m 'Post-commit for save-all-attachments.'"))
+	(dolog "Done!\n")
+	(pop-to-buffer logbuf)))))
 
 ;;; handle candidates
 
