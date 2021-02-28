@@ -1351,3 +1351,21 @@ ACTION will get called with four arguments: MSG LAYOUT TYPE FILENAME."
       (test "text" "textplain" nil))
     (message "%s" results)
     results))
+
+(defun test-buffer-default-directory ()
+  (interactive)
+  (save-excursion
+    (let ((buf1 (save-excursion
+		  (find-file
+		   "/Users/steve/edu/schedule.txt")
+		  (current-buffer)))
+	  (buf2 (save-excursion
+		  (find-file "/Users/steve/.vm")
+		  (current-buffer))))
+      (set-buffer buf1)
+      (message "%s is %s in %s" "buf1" buf1 default-directory)
+      (sit-for 1)
+      (set-buffer buf2)
+      (message "%s is %s in %s" "buf2" buf2 default-directory)
+      )))
+
