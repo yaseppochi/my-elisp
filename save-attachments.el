@@ -185,6 +185,21 @@ sk.tsukuba.ac.jp, s.tsukuba.ac.jp, and u.tsukuba.ac.jp."
 		     logbuf)
       added-attachments)))
 
+;; #### I don't understand why this is needed.  It seemed to work before....
+(defun utf8-shell-command (command &optional output-buffer error-buffer)
+  "Execute COMMAND in inferior shell, handling non-ASCII arguments.
+OUTPUT-BUFFER and ERROR-BUFFER are as in #'shell-command."
+  (with-temp-buffer
+    (insert command)
+    (goto-char (point-min))
+    (skip-chars-forward "^ ")
+    (delete-char 1)
+    (shell-command-on-region
+     (point) (point-max)
+     (concat "xargs " (buffer-substring (point-min) (point)))
+     output-buffer nil error-buffer)))
+
+
 (defun sjt/vm-save-all-attachments
   (&optional count directory no-delete-after-saving)
 
@@ -208,24 +223,27 @@ Specifically it matches author and recipient against `sjt/students-all'."
 				vm-mime-save-all-attachments-history))))
 	 nil))
 
-  (let* ((default-directory directory)
+  ;; #### #'save-excursion seems completely horked.  Grr.
+  (let* ((old-directory default-directory)
+	 (vmbuf (current-buffer))
 	 (logbuf (get-buffer-create " *Save all attachments log*"))
 	 (exists (file-exists-p directory))
 	 (gitdir1 (expand-file-name ".git/" directory))
 	 (gitdir2 (expand-file-name "../.git/" directory))
 	 (gitdir (cond ((and exists (file-directory-p gitdir1)) gitdir1)
 		       ((and exists (file-directory-p gitdir2)) gitdir2)
-		       (t gitdir1))))
+		       (t gitdir1)))
+	 attachments)
     (labels ((dolog (s)
 	       (insert-string s logbuf))
 	     (docmd (cmd)
 	       (let ((default-directory directory))
 		 (dolog (format "%s\n  (in %s)\n" cmd default-directory))
-		 (shell-command cmd logbuf)
+		 (utf8-shell-command cmd logbuf)
 		 (goto-char (point-max) logbuf)))
 	     (doadd (files)
-	       (let ((default-directory directory))
-	       (let ((added nil))
+	       (let ((default-directory directory)
+		     (added nil))
 		 (loop
 		   for attachment in files
 		   do
@@ -234,53 +252,52 @@ Specifically it matches author and recipient against `sjt/students-all'."
 		   (if (not (file-exists-p attachment))
 		       (dolog (format "didn't find %s in %s\n"
 				      attachment default-directory))
-		     (docmd (format "git add -f%s" attachment))
+		     (docmd (format "git add -f %s" attachment))
 		     (setq added t)))
 		 added))
-	       )
 	     (docommit (files msg)
 	       (if (not (doadd files))
 		   (dolog (format "No files available to commit in %s (%s).\n"
 				  default-directory (buffer-name)))
 		 (dolog "  Adding all files.\n  Committing.\n")
 		 (docmd (format "git commit -m '%s'" msg)))))
-      (save-excursion
-	(set-buffer logbuf)
-	(erase-buffer)
-	(setq default-directory directory))
+      (set-buffer logbuf)
+      (erase-buffer)
+      (dolog (format "set default-directory to %s in %s\n" directory logbuf))
+      (setq default-directory directory)
+      (set-buffer vmbuf)
       (dolog (format "Arguments: %s %s %s\n"
 		     count no-delete-after-saving directory))
       (dolog (format "%s exists: %s\n" directory (if exists "yes" "no")))
       (dolog (format "%s exists: %s\n"
 		     gitdir
 		     (if (file-exists-p gitdir) "yes" "no")))
-      (dolog (format "default directory is %s\n" directory))
       (when (not exists)
 	(dolog (format "Creating %s.\n" directory))
 	(make-directory directory))
+      (dolog (format "set default-directory to %s in %s\n" directory vmbuf))
+      (setq default-directory directory)
       (dolog (if (file-exists-p gitdir)
 		 "Using existing git repo.\n"
 	       "Initializing git repo.\n"))
+      (dolog (format "after dolog default-directory is %s\n" default-directory))
       (when (not (file-exists-p gitdir))
 	(docmd "git init"))
+      (setq attachments (sjt/git-add-attachments count logbuf))
       (dolog "Check for modified or untracked in added-attachments.\n")
       (dolog (format "default directory is %s\n" directory))
-      (docommit (sjt/git-add-attachments count logbuf)
-		"Pre-commit for save-all-attachments.")
-      ;; #### This could probably be a prog2.
-      (when (save-excursion
-	      (switch-to-buffer logbuf)
-	      (prog1
-		  (y-or-n-p "Commit now? ")
-		(bury-buffer))
-	      )
+      (docommit attachments "Pre-commit for save-all-attachments.")
+      (when (prog2
+		(switch-to-buffer logbuf)
+		(y-or-n-p "Commit now? ")
+	      (set-buffer vmbuf))
 	(dolog "Saving all attachments.\n")
-	(let ((vm-mime-delete-after-saving t)
-	      (files-to-add (sjt/git-add-attachments count logbuf)))
+	(let ((vm-mime-delete-after-saving t))
 	  ;; #### Does this need to log in logbuf?
 	  (vm-save-all-attachments count directory no-delete-after-saving)
-	  (docommit files-to-add "Post-commit for save-all-attachments.")))
+	  (docommit attachments "Post-commit for save-all-attachments.")))
       (dolog "Done!\n")
+      (setq default-directory old-directory)
       (pop-to-buffer logbuf))))
 
 ;;; handle candidates
