@@ -1154,7 +1154,7 @@ ACTION will get called with four arguments: MSG LAYOUT TYPE FILENAME."
 			   action-name type filename disposition))
 	      (funcall action (car mlist) layout type filename))
               (setq parts (cdr parts)))))
-        (setq mlist (cdr mlist))))))
+        (setq mlist (cdr mlist)))))
 
 ;; From vm-mime.el.
 ;; Lots of bad coding here. :-(
