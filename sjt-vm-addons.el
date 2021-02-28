@@ -1130,10 +1130,8 @@ ACTION will get called with four arguments: MSG LAYOUT TYPE FILENAME."
           (unless (eq o 'none)
             (setq type (car (vm-mm-layout-type o)))
             
-            (cond ((or (vm-mime-types-match "multipart/alternative" type)
-                       (vm-mime-types-match "multipart/mixed" type)
-                       (vm-mime-types-match "multipart/report" type)
-                       (vm-mime-types-match "message/rfc822" type)
+            (cond ((or (vm-mime-types-match "multipart" type)
+                       (vm-mime-types-match "message" type)
                        )
                    (setq parts (copy-sequence (vm-mm-layout-parts o))))
                   (t (setq parts (list o))))
@@ -1150,21 +1148,11 @@ ACTION will get called with four arguments: MSG LAYOUT TYPE FILENAME."
                     disposition (car (vm-mm-layout-disposition layout))
                     filename (vm-mime-get-disposition-filename layout) )
               
-              (cond ((or filename
-                         (and disposition (string= disposition "attachment"))
-                         (and (not (vm-mime-types-match 
-				    "message/external-body" type))
-                              types
-                              (vm-mime-is-type-valid type types exceptions)))
-                     (when action-name
-                       (vm-inform 10
-			"%s part type=%s filename=%s disposition=%s"
-			action-name type filename disposition))
-                     (funcall action (car mlist) layout type filename))
-                    (action-name
-                     (vm-inform 10
-		      "No %s on part type=%s filename=%s disposition=%s"
-		      action-name type filename disposition)))
+	      (when action-name
+		(vm-inform 10
+			   "%s part type=%s filename=%s disposition=%s"
+			   action-name type filename disposition))
+	      (funcall action (car mlist) layout type filename))
               (setq parts (cdr parts)))))
         (setq mlist (cdr mlist))))))
 
