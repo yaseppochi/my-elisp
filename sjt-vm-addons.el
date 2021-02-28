@@ -1090,7 +1090,85 @@ Otherwise, CHARSET and LANG should symbols returned by this function."
 ; 	  (goto-char end)
 ; 	  (delete-region match-start start))))))
 
-;; From vm-rfaddons.el.
+;; based on vm-mime-operate-on-attachments
+(defun* vm-mime-operate-on-parts (count &key 
+				  ((:name action-name))
+				  ((:action action))
+				  ((:included types)) 
+				  ((:excluded exceptions))
+				  ((:messages mlist)))
+  "On the next COUNT messages or marked messages, call the
+function ACTION on all \"parts\".  
+
+IRRELEVANT?  If so, nuke the corresponding arguments.
+  For the purpose of this function, an \"attachment\" is a mime
+  part part which has \"attachment\" as its disposition, or simply
+  has an associated filename, or has a type that matches a regexp
+  in TYPES but doesn't match one in EXCEPTIONS.
+
+ACTION-NAME should be a human-readable string describing the
+action in minibuffer messages.  Or it can be nil to suppress
+messages. 
+
+ACTION will get called with four arguments: MSG LAYOUT TYPE FILENAME." 
+  (unless mlist
+    (unless count (setq count 1))
+    (vm-check-for-killed-folder)
+    (vm-select-folder-buffer-and-validate 1 nil))
+
+  (let ((mlist (or mlist (vm-select-operable-messages
+			  count (vm-interactive-p) "Action on"))))
+    (vm-retrieve-operable-messages count mlist :fail t)
+    (save-excursion
+      (while mlist
+        (let (m parts layout filename type disposition o)
+          (setq o (vm-mm-layout (car mlist)))
+          (when (stringp o)
+            (setq o 'none)
+            (backtrace)
+            (vm-inform 0 "There is a bug, please report it with *backtrace*"))
+          (unless (eq o 'none)
+            (setq type (car (vm-mm-layout-type o)))
+            
+            (cond ((or (vm-mime-types-match "multipart/alternative" type)
+                       (vm-mime-types-match "multipart/mixed" type)
+                       (vm-mime-types-match "multipart/report" type)
+                       (vm-mime-types-match "message/rfc822" type)
+                       )
+                   (setq parts (copy-sequence (vm-mm-layout-parts o))))
+                  (t (setq parts (list o))))
+            
+            (while parts
+              (while (vm-mime-composite-type-p
+		      (car (vm-mm-layout-type (car parts))))
+		(setq parts 
+		      (nconc (copy-sequence (vm-mm-layout-parts (car parts)))
+			     (cdr parts))))
+              
+              (setq layout (car parts)
+                    type (car (vm-mm-layout-type layout))
+                    disposition (car (vm-mm-layout-disposition layout))
+                    filename (vm-mime-get-disposition-filename layout) )
+              
+              (cond ((or filename
+                         (and disposition (string= disposition "attachment"))
+                         (and (not (vm-mime-types-match 
+				    "message/external-body" type))
+                              types
+                              (vm-mime-is-type-valid type types exceptions)))
+                     (when action-name
+                       (vm-inform 10
+			"%s part type=%s filename=%s disposition=%s"
+			action-name type filename disposition))
+                     (funcall action (car mlist) layout type filename))
+                    (action-name
+                     (vm-inform 10
+		      "No %s on part type=%s filename=%s disposition=%s"
+		      action-name type filename disposition)))
+              (setq parts (cdr parts)))))
+        (setq mlist (cdr mlist))))))
+
+;; From vm-mime.el.
 ;; Lots of bad coding here. :-(
 ;; CHANGES:
 ;; (1) Descend into nested composite parts.
@@ -1266,3 +1344,22 @@ ACTION will get called with four arguments: MSG LAYOUT TYPE FILENAME."
 	)
       )))
 
+(defun test-vm-mime-types-match (&optional report-successes)
+  (interactive "P")
+  (let ((results nil))
+    (labels ((test (type type/subtype expected-result)
+	       (let ((result (vm-mime-types-match type type/subtype)))
+		 (when (or report-successes
+			   (not (eq (null result) (null expected-result))))
+		   (push (list type type/subtype
+			       'expected (if expected-result 'success 'fail)
+			       (if result 'success 'fail))
+			 results)))))
+      (test "text/plain" "image/png" nil)
+      (test "text/plain" "text" nil)
+      (test "text" "text/plain" t)
+      (test "text/" "text/plain" nil)
+      (test "text/plain" "text/plain" t)
+      (test "text" "textplain" nil))
+    (message "%s" results)
+    results))
