@@ -164,6 +164,7 @@ sk.tsukuba.ac.jp, s.tsukuba.ac.jp, and u.tsukuba.ac.jp."
 ;; repeatedly is a win.
 ;; Merge ...-internal back into main function?
 ;; DIRECTORY must be a string.  COUNT is ignored.
+;; #### Rename this to "sjt/find-saveable-attachments".
 (defun sjt/git-add-attachments (count logbuf)
   (if (null logbuf)
       (error 'args-out-of-range "logbuf must be non-nil")
@@ -186,17 +187,19 @@ sk.tsukuba.ac.jp, s.tsukuba.ac.jp, and u.tsukuba.ac.jp."
       added-attachments)))
 
 ;; #### I don't understand why this is needed.  It seemed to work before....
+;; #### and now it's badly broken
 (defun utf8-shell-command (command &optional output-buffer error-buffer)
   "Execute COMMAND in inferior shell, handling non-ASCII arguments.
 OUTPUT-BUFFER and ERROR-BUFFER are as in #'shell-command."
   (with-temp-buffer
     (insert command)
+    (insert ?\000)			; #### This is really hinky.
     (goto-char (point-min))
     (skip-chars-forward "^ ")
     (delete-char 1)
     (shell-command-on-region
      (point) (point-max)
-     (concat "xargs " (buffer-substring (point-min) (point)))
+     (concat "xargs -0 " (buffer-substring (point-min) (point)))
      output-buffer nil error-buffer)))
 
 
@@ -233,13 +236,14 @@ Specifically it matches author and recipient against `sjt/students-all'."
 	 (gitdir (cond ((and exists (file-directory-p gitdir1)) gitdir1)
 		       ((and exists (file-directory-p gitdir2)) gitdir2)
 		       (t gitdir1)))
+	 (msgid (vm-message-id-of (vm-current-message)))
 	 attachments)
     (labels ((dolog (s)
 	       (insert-string s logbuf))
 	     (docmd (cmd)
 	       (let ((default-directory directory))
 		 (dolog (format "%s\n  (in %s)\n" cmd default-directory))
-		 (utf8-shell-command cmd logbuf)
+		 (shell-command cmd logbuf)
 		 (goto-char (point-max) logbuf)))
 	     (doadd (files)
 	       (let ((default-directory directory)
@@ -247,22 +251,22 @@ Specifically it matches author and recipient against `sjt/students-all'."
 		 (loop
 		   for attachment in files
 		   do
-		   (dolog (format "trying to add %s\n  in %s\n"
+		   (dolog (format "trying to add '%s'\n  in '%s'\n"
 				  attachment default-directory))
 		   (if (not (file-exists-p attachment))
-		       (dolog (format "didn't find %s in %s\n"
+		       (dolog (format "didn't find '%s' in '%s'\n"
 				      attachment default-directory))
-		     (docmd (format "git add -f %s" attachment))
+		     (docmd (format "git add -f %s"
+				    (shell-quote-argument attachment)))
 		     (setq added t)))
 		 added))
-	     (docommit (files msg)
+	     (docommit (msgid files msg)
 	       (if (not (doadd files))
 		   (dolog (format "No files available to commit in %s (%s).\n"
 				  default-directory (buffer-name)))
-		 (dolog "  Adding all files.\n  Committing.\n")
-		 (docmd (format "git commit -m '%s'" msg)))))
-      (set-buffer logbuf)
-      (erase-buffer)
+		 (dolog "  Added files.  Committing.\n")
+		 (docmd (format "git commit -m '%s: %s'" msgid msg)))))
+      (erase-buffer logbuf)
       (dolog (format "set default-directory to %s in %s\n" directory logbuf))
       (setq default-directory directory)
       (set-buffer vmbuf)
@@ -286,16 +290,17 @@ Specifically it matches author and recipient against `sjt/students-all'."
       (setq attachments (sjt/git-add-attachments count logbuf))
       (dolog "Check for modified or untracked in added-attachments.\n")
       (dolog (format "default directory is %s\n" directory))
-      (docommit attachments "Pre-commit for save-all-attachments.")
+      (docommit msgid attachments "Pre-commit for save-all-attachments.")
       (when (prog2
 		(switch-to-buffer logbuf)
-		(y-or-n-p "Commit now? ")
+		;; #### This seems to be working.  Simplify it!
+		t ; (y-or-n-p "Commit now? ")
 	      (set-buffer vmbuf))
 	(dolog "Saving all attachments.\n")
 	(let ((vm-mime-delete-after-saving t))
 	  ;; #### Does this need to log in logbuf?
 	  (vm-save-all-attachments count directory no-delete-after-saving)
-	  (docommit attachments "Post-commit for save-all-attachments.")))
+	  (docommit msgid attachments "Post-commit for save-all-attachments.")))
       (dolog "Done!\n")
       (setq default-directory old-directory)
       (pop-to-buffer logbuf))))
@@ -353,10 +358,25 @@ Specifically it matches author and recipient against `sjt/students-all'."
       dir))))
 
 
-(defun sjt/vm-intl-student-save-all-attachments (attachment-directory
-						 &optional dryrun)
-  
-  (interactive (nconc (sjt/read-attachment-directory)
+(defun sjt/vm-intl-student-save-all-attachments (applicant)
+  "If non-nil, APPLICANT means the message is from an applicant for admission.
+Called interactively, applicant is taken from the prefix argument.
+Note: calling sequence is different from other save-all-attachments."
+  (interactive (nconc 
 		      (list current-prefix-arg)))
-  
-  (sjt/vm-save-all-attachments dryrun attachment-directory))
+
+  (sjt/vm-save-all-attachments
+   nil
+   (if applicant
+       (sjt/read-attachment-directory)
+     (file-name-as-directory
+      (expand-file-name
+       (let ((default-dir (or (sjt/construct-directory-for-student)
+			      vm-mime-all-attachments-directory
+			      vm-mime-attachment-save-directory
+			      default-directory)))
+	 (vm-read-file-name "Attachment directory: "
+			    default-dir
+			    default-dir
+			    nil nil
+			    vm-mime-save-all-attachments-history)))))))
